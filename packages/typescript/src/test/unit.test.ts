@@ -4,6 +4,7 @@ import { computeDerivationInput } from "../derivation.js";
 import { parseGateMetadata } from "../metadata.js";
 import { decryptFile } from "../crypto.js";
 import { HavenAolError } from "../decrypt.js";
+import { buildGateRequestTypedData, parseSignatureHex } from "../eip712.js";
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -152,5 +153,35 @@ describe("decryptFile", () => {
       () => decryptFile(new Uint8Array(5), new Uint8Array(32)),
       /too short/,
     );
+  });
+});
+
+// ── EIP-712 helpers ──
+
+describe("eip712 helpers", () => {
+  it("builds GateRequest typed data payload", () => {
+    const typedData = buildGateRequestTypedData({
+      evmAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      transportPublicKey: new Uint8Array([1, 2, 3]),
+      nonce: 42n,
+      eip712ChainId: 1n,
+      eip712VerifyingContract: "0x1111111111111111111111111111111111111111",
+    });
+    assert.equal(typedData.domain.name, "HavenAOL");
+    assert.equal(typedData.primaryType, "GateRequest");
+    assert.equal(typedData.message.transportPublicKey, "0x010203");
+    assert.equal(typedData.message.nonce, 42n);
+  });
+
+  it("parses 65-byte hex signature", () => {
+    const sig = `0x${"11".repeat(64)}1b`;
+    const out = parseSignatureHex(sig);
+    assert.equal(out.length, 65);
+    assert.equal(out[0], 0x11);
+    assert.equal(out[64], 0x1b);
+  });
+
+  it("rejects invalid signature length", () => {
+    assert.throws(() => parseSignatureHex("0x1234"), /65-byte/);
   });
 });

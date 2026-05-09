@@ -18,6 +18,10 @@ const GateRequestType = IDL.Record({
   cid: IDL.Text,
   evmAddress: IDL.Text,
   transportPublicKey: IDL.Vec(IDL.Nat8),
+  nonce: IDL.Nat,
+  signature: IDL.Vec(IDL.Nat8),
+  eip712ChainId: IDL.Nat,
+  eip712VerifyingContract: IDL.Text,
 });
 
 const GateErrorVariant = IDL.Variant({
@@ -26,6 +30,8 @@ const GateErrorVariant = IDL.Variant({
   InvalidThreshold: IDL.Null,
   EvmRpcError: IDL.Text,
   VetKDError: IDL.Text,
+  InvalidSignature: IDL.Text,
+  NonceAlreadyUsed: IDL.Null,
 });
 
 const GateResultVariant = IDL.Variant({
@@ -56,6 +62,10 @@ export async function requestDecryptionKey(
     cid: string;
     evmAddress: string;
     transportPublicKey: Uint8Array;
+    nonce: bigint;
+    signature: Uint8Array;
+    eip712ChainId: bigint;
+    eip712VerifyingContract: string;
   },
 ): Promise<GateResult> {
   const actor = Actor.createActor(idlFactory, { agent, canisterId });
@@ -66,6 +76,10 @@ export async function requestDecryptionKey(
     cid: request.cid,
     evmAddress: request.evmAddress,
     transportPublicKey: request.transportPublicKey,
+    nonce: request.nonce,
+    signature: request.signature,
+    eip712ChainId: request.eip712ChainId,
+    eip712VerifyingContract: request.eip712VerifyingContract,
   }) as GateResult;
   return result;
 }

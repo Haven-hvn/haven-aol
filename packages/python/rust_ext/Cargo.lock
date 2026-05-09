@@ -3,16 +3,6 @@
 version = 4
 
 [[package]]
-name = "haven_aol_vetkeys"
-version = "0.1.0"
-dependencies = [
- "ic-cdk",
- "ic-vetkeys",
- "pyo3",
- "rand",
-]
-
-[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -426,6 +416,16 @@ name = "half"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
+
+[[package]]
+name = "haven_aol_vetkeys"
+version = "0.1.0"
+dependencies = [
+ "ic-cdk",
+ "ic-vetkeys",
+ "pyo3",
+ "rand",
+]
 
 [[package]]
 name = "heck"

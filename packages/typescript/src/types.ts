@@ -32,6 +32,10 @@ export interface GateRequest {
   cid: string;
   evmAddress: string;
   transportPublicKey: Uint8Array;
+  nonce: bigint;
+  signature: Uint8Array;
+  eip712ChainId: bigint;
+  eip712VerifyingContract: string;
 }
 
 export interface InsufficientBalanceError {
@@ -43,7 +47,9 @@ export type GateError =
   | { InvalidAddress: string }
   | { InvalidThreshold: null }
   | { EvmRpcError: string }
-  | { VetKDError: string };
+  | { VetKDError: string }
+  | { InvalidSignature: string }
+  | { NonceAlreadyUsed: null };
 
 export type GateResult = { ok: Uint8Array } | { err: GateError };
 
@@ -54,5 +60,27 @@ export interface DecryptOptions {
   encryptedFileBytes: Uint8Array;
   canisterId: string;
   host: string;
+  nonce: bigint;
+  signature: Uint8Array;
+  eip712ChainId: bigint;
+  eip712VerifyingContract: string;
   fetchRootKey?: boolean;
+}
+
+export interface GateRequestTypedData {
+  domain: {
+    name: "HavenAOL";
+    chainId: bigint;
+    verifyingContract: string;
+  };
+  primaryType: "GateRequest";
+  types: {
+    EIP712Domain: Array<{ name: "name" | "chainId" | "verifyingContract"; type: "string" | "uint256" | "address" }>;
+    GateRequest: Array<{ name: "evmAddress" | "transportPublicKey" | "nonce"; type: "address" | "bytes" | "uint256" }>;
+  };
+  message: {
+    evmAddress: string;
+    transportPublicKey: `0x${string}`;
+    nonce: bigint;
+  };
 }

@@ -1,11 +1,15 @@
 import Nat "mo:core/Nat";
 import Nat8 "mo:core/Nat8";
+import Nat32 "mo:core/Nat32";
+import Nat64 "mo:core/Nat64";
+import VarArray "mo:core/VarArray";
 import Text "mo:core/Text";
 import Char "mo:core/Char";
 import Blob "mo:core/Blob";
 import Error "mo:core/Error";
 import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
+import Map "mo:core/Map";
 import Sha256 "mo:sha2/Sha256";
 
 // Haven-AOL (Always Online on DFINITY ICP): smart access management with conditional keys
@@ -183,8 +187,12 @@ persistent actor {
   // ── Constants ──────────────────────────────────────────────────────
 
   let CYCLE_BUDGET : Nat = 10_000_000_000;
+  let APP_NAME : Text = "HavenAOL";
+  let EIP712_DOMAIN_TYPEHASH_HEX : Text = "8cad95687ba82c2ce50e74f7b754645e5117c3a5bec8151c0726d5857980a866";
+  let EIP712_GATE_REQUEST_TYPEHASH_HEX : Text = "88160239aa0076952ec94d7cf6b6b51da1765acd803b051b6d06b3f27623f2c0";
   // VetKD context — protocol v1 identifier (stable across Haven-AOL deployments).
   let VETKD_CONTEXT : Blob = Text.encodeUtf8("accessol_v1");
+  let usedNonces = Map.empty<Text, Bool>();
 
   // ── EVM RPC canister reference ─────────────────────────────────────
 
@@ -288,6 +296,226 @@ persistent actor {
       } else { c });
     };
     out;
+  };
+
+  func natToHexDigit(n : Nat) : Char {
+    if (n < 10) {
+      Char.fromNat32(48 + Nat32.fromNat(n))
+    } else {
+      Char.fromNat32(87 + Nat32.fromNat(n))
+    };
+  };
+
+  func natToFixedHex(value : Nat, length : Nat) : Text {
+    var n = value;
+    var out = "";
+    var i : Nat = 0;
+    while (i < length * 2) {
+      let nibble = n % 16;
+      out := Text.fromChar(natToHexDigit(nibble)) # out;
+      n := n / 16;
+      i += 1;
+    };
+    out;
+  };
+
+  func blobToHex(bytes : Blob) : Text {
+    var out = "";
+    for (b in Blob.toArray(bytes).vals()) {
+      let n = Nat8.toNat(b);
+      out #= Text.fromChar(natToHexDigit(n / 16));
+      out #= Text.fromChar(natToHexDigit(n % 16));
+    };
+    out;
+  };
+
+  func hexToBlob(hex : Text) : ?Blob {
+    let stripped = stripHexPrefix(hex);
+    if (stripped.size() % 2 != 0) return null;
+    let chars = stripped.chars();
+    let byteLen = stripped.size() / 2;
+    let bytes = VarArray.tabulate<Nat8>(byteLen, func _ = 0);
+    var idx : Nat = 0;
+    label parse while (true) {
+      let hi = chars.next();
+      let lo = chars.next();
+      switch (hi, lo) {
+        case (null, null) { break parse };
+        case (?h, ?l) {
+          if (not isHexChar(h) or not isHexChar(l)) return null;
+          let value = hexCharToNat(h) * 16 + hexCharToNat(l);
+          bytes[idx] := Nat8.fromNat(value);
+          idx += 1;
+        };
+        case _ { return null };
+      };
+    };
+    ?Blob.fromArray(VarArray.toArray(bytes));
+  };
+
+  // Minimal Keccak-f[1600] for EIP-712 / Ethereum.
+  let KECCAKF_ROUNDS : Nat = 24;
+  let KECCAKF_RNDC : [Nat64] = [
+    0x0000000000000001, 0x0000000000008082, 0x800000000000808A, 0x8000000080008000,
+    0x000000000000808B, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
+    0x000000000000008A, 0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
+    0x000000008000808B, 0x800000000000008B, 0x8000000000008089, 0x8000000000008003,
+    0x8000000000008002, 0x8000000000000080, 0x000000000000800A, 0x800000008000000A,
+    0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+  ];
+  let KECCAKF_ROTC : [Nat] = [
+    1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44,
+  ];
+  let KECCAKF_PILN : [Nat] = [
+    10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1,
+  ];
+
+  func rol64(a : Nat64, s : Nat) : Nat64 {
+    if (s == 0) return a;
+    Nat64.bitrotLeft(a, Nat64.fromNat(s));
+  };
+
+  func keccakF(st : [var Nat64]) {
+    var round : Nat = 0;
+    while (round < KECCAKF_ROUNDS) {
+      let bc = VarArray.tabulate<Nat64>(5, func _ = 0);
+      var i : Nat = 0;
+      while (i < 5) {
+        bc[i] := st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
+        i += 1;
+      };
+      i := 0;
+      while (i < 5) {
+        let t = bc[(i + 4) % 5] ^ rol64(bc[(i + 1) % 5], 1);
+        var j : Nat = 0;
+        while (j < 25) {
+          if (j % 5 == i) { st[j] := st[j] ^ t };
+          j += 1;
+        };
+        i += 1;
+      };
+      var t = st[1];
+      i := 0;
+      while (i < 24) {
+        let j = KECCAKF_PILN[i];
+        let temp = st[j];
+        st[j] := rol64(t, KECCAKF_ROTC[i]);
+        t := temp;
+        i += 1;
+      };
+      var y : Nat = 0;
+      while (y < 5) {
+        let row = [var st[y * 5], st[y * 5 + 1], st[y * 5 + 2], st[y * 5 + 3], st[y * 5 + 4]];
+        i := 0;
+        while (i < 5) {
+          st[y * 5 + i] := row[i] ^ (Nat64.bitnot(row[(i + 1) % 5]) & row[(i + 2) % 5]);
+          i += 1;
+        };
+        y += 1;
+      };
+      st[0] := st[0] ^ KECCAKF_RNDC[round];
+      round += 1;
+    };
+  };
+
+  func keccak256(data : Blob) : Blob {
+    let rate : Nat = 136; // 1088-bit rate for keccak-256
+    let st = VarArray.tabulate<Nat64>(25, func _ = 0);
+    let bytes = Blob.toArray(data);
+    var offset : Nat = 0;
+    while (offset + rate <= bytes.size()) {
+      var i : Nat = 0;
+      while (i < rate) {
+        let lane = i / 8;
+        let shift = (i % 8) * 8;
+        st[lane] := st[lane] ^ Nat64.bitshiftLeft(Nat64.fromNat(Nat8.toNat(bytes[offset + i])), Nat64.fromNat(shift));
+        i += 1;
+      };
+      keccakF(st);
+      offset += rate;
+    };
+    let rem = bytes.size() - offset;
+    var i : Nat = 0;
+    while (i < rem) {
+      let lane = i / 8;
+      let shift = (i % 8) * 8;
+      st[lane] := st[lane] ^ Nat64.bitshiftLeft(Nat64.fromNat(Nat8.toNat(bytes[offset + i])), Nat64.fromNat(shift));
+      i += 1;
+    };
+    // Keccak padding: 0x01 ... 0x80
+    let padLane = rem / 8;
+    let padShift = (rem % 8) * 8;
+    st[padLane] := st[padLane] ^ Nat64.bitshiftLeft(1, Nat64.fromNat(padShift));
+    let last = rate - 1;
+    let lastLane = last / 8;
+    let lastShift = (last % 8) * 8;
+    st[lastLane] := st[lastLane] ^ Nat64.bitshiftLeft(0x80, Nat64.fromNat(lastShift));
+    keccakF(st);
+    let out = VarArray.tabulate<Nat8>(32, func _ = 0);
+    i := 0;
+    while (i < 32) {
+      let lane = i / 8;
+      let shift = (i % 8) * 8;
+      let byte = Nat64.toNat(Nat64.bitand(Nat64.bitshiftRight(st[lane], Nat64.fromNat(shift)), Nat64.fromNat(0xff)));
+      out[i] := Nat8.fromNat(byte);
+      i += 1;
+    };
+    Blob.fromArray(VarArray.toArray(out));
+  };
+
+  func leftPad32(hexNoPrefix : Text) : Text {
+    let lower = toLowerHex(stripHexPrefix(hexNoPrefix));
+    if (lower.size() > 64) { return lower };
+    var out = "";
+    var i : Nat = 0;
+    while (i < 64 - lower.size()) {
+      out #= "0";
+      i += 1;
+    };
+    out # lower;
+  };
+
+  func encodeAddress32(address : Text) : ?Text {
+    switch (validateEvmAddress(address)) {
+      case (#err(_)) { null };
+      case (#ok(h)) { ?leftPad32(h) };
+    };
+  };
+
+  func encodeUint256(value : Nat) : Text {
+    leftPad32(natToFixedHex(value, 32));
+  };
+
+  func eip712DomainSeparator(name : Text, chainId : Nat, verifyingContract : Text) : ?Blob {
+    let ?contract32 = encodeAddress32(verifyingContract) else return null;
+    let nameHash = blobToHex(keccak256(Text.encodeUtf8(name)));
+    let domainTypeHashHex = "8cad95687ba82c2ce50e74f7b754645e5117c3a5bec8151c0726d5857980a866";
+    let packedHex = domainTypeHashHex # nameHash # encodeUint256(chainId) # contract32;
+    let ?packedBlob = hexToBlob(packedHex) else return null;
+    ?keccak256(packedBlob);
+  };
+
+  func eip712GateStructHash(evmAddress : Text, transportPublicKey : Blob, nonce : Nat) : ?Blob {
+    let ?address32 = encodeAddress32(evmAddress) else return null;
+    let transportHashHex = blobToHex(keccak256(transportPublicKey));
+    let gateTypeHashHex = "88160239aa0076952ec94d7cf6b6b51da1765acd803b051b6d06b3f27623f2c0";
+    let packedHex = gateTypeHashHex # address32 # transportHashHex # encodeUint256(nonce);
+    let ?packedBlob = hexToBlob(packedHex) else return null;
+    ?keccak256(packedBlob);
+  };
+
+  func eip712Digest(domainSeparator : Blob, structHash : Blob) : ?Blob {
+    let prefixHex = "1901";
+    let payloadHex = prefixHex # blobToHex(domainSeparator) # blobToHex(structHash);
+    let ?payload = hexToBlob(payloadHex) else return null;
+    ?keccak256(payload);
+  };
+
+  func nonceReplayKey(domainSeparator : Blob) : Blob {
+    let gateTypeHashHex = "88160239aa0076952ec94d7cf6b6b51da1765acd803b051b6d06b3f27623f2c0";
+    let scopeHex = blobToHex(domainSeparator) # gateTypeHashHex;
+    let ?scopeBlob = hexToBlob(scopeHex) else Runtime.trap("internal nonce scope hex encoding failure");
+    keccak256(scopeBlob);
   };
 
   // ── Address validation ─────────────────────────────────────────────
@@ -422,6 +650,10 @@ persistent actor {
     cid : Text;
     evmAddress : Text;
     transportPublicKey : Blob;
+    nonce : Nat;
+    signature : Blob;
+    eip712ChainId : Nat;
+    eip712VerifyingContract : Text;
   };
 
   public type GateError = {
@@ -430,6 +662,8 @@ persistent actor {
     #InvalidThreshold;
     #EvmRpcError : Text;
     #VetKDError : Text;
+    #InvalidSignature : Text;
+    #NonceAlreadyUsed;
   };
 
   public type GateResult = {
@@ -461,11 +695,100 @@ persistent actor {
       case (?e) { return #err(e) };
       case null {};
     };
+    switch (validateAddress(req.eip712VerifyingContract, "eip712VerifyingContract")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
     if (req.threshold == 0) return #err(#InvalidThreshold);
     if (req.cid.size() == 0) return #err(#InvalidAddress("cid must not be empty"));
     if (Blob.toArray(req.transportPublicKey).size() == 0) return #err(#InvalidAddress("transportPublicKey must not be empty"));
+    if (Blob.toArray(req.signature).size() != 65) return #err(#InvalidSignature("signature must be 65 bytes [r||s||v]"));
 
-    // Step 1: EVM balance check
+    // Step A: Nonce validation (scoped by EIP-712 domain + primary type)
+    let domainSeparator = switch (eip712DomainSeparator(APP_NAME, req.eip712ChainId, req.eip712VerifyingContract)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct domain separator")) };
+    };
+    let nonceScopeKey = nonceReplayKey(domainSeparator);
+    let scopedNonce = blobToHex(nonceScopeKey) # ":" # Nat.toText(req.nonce);
+    if (Map.get(usedNonces, Text.compare, scopedNonce) != null) {
+      return #err(#NonceAlreadyUsed);
+    };
+    Map.add(usedNonces, Text.compare, scopedNonce, true);
+
+    // Step B: EIP-712 hash construction
+    let structHash = switch (eip712GateStructHash(req.evmAddress, req.transportPublicKey, req.nonce)) {
+      case (?h) { h };
+      case null { return #err(#InvalidSignature("failed to construct struct hash")) };
+    };
+    let digest = switch (eip712Digest(domainSeparator, structHash)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct digest")) };
+    };
+
+    // Step C: Signature recovery via ecrecover precompile
+    let signatureBytes = Blob.toArray(req.signature);
+    let rBlob = Blob.fromArray([signatureBytes[0], signatureBytes[1], signatureBytes[2], signatureBytes[3], signatureBytes[4], signatureBytes[5], signatureBytes[6], signatureBytes[7], signatureBytes[8], signatureBytes[9], signatureBytes[10], signatureBytes[11], signatureBytes[12], signatureBytes[13], signatureBytes[14], signatureBytes[15], signatureBytes[16], signatureBytes[17], signatureBytes[18], signatureBytes[19], signatureBytes[20], signatureBytes[21], signatureBytes[22], signatureBytes[23], signatureBytes[24], signatureBytes[25], signatureBytes[26], signatureBytes[27], signatureBytes[28], signatureBytes[29], signatureBytes[30], signatureBytes[31]]);
+    let sBlob = Blob.fromArray([signatureBytes[32], signatureBytes[33], signatureBytes[34], signatureBytes[35], signatureBytes[36], signatureBytes[37], signatureBytes[38], signatureBytes[39], signatureBytes[40], signatureBytes[41], signatureBytes[42], signatureBytes[43], signatureBytes[44], signatureBytes[45], signatureBytes[46], signatureBytes[47], signatureBytes[48], signatureBytes[49], signatureBytes[50], signatureBytes[51], signatureBytes[52], signatureBytes[53], signatureBytes[54], signatureBytes[55], signatureBytes[56], signatureBytes[57], signatureBytes[58], signatureBytes[59], signatureBytes[60], signatureBytes[61], signatureBytes[62], signatureBytes[63]]);
+    let vByte = Nat8.toNat(signatureBytes[64]);
+    if (vByte != 27 and vByte != 28) return #err(#InvalidSignature("v must be 27 or 28"));
+    let ecrecoverInputHex = blobToHex(digest) # encodeUint256(vByte) # blobToHex(rBlob) # blobToHex(sBlob);
+    let ecrecoverCallArgs : CallArgs = {
+      transaction = {
+        to = ?"0x0000000000000000000000000000000000000001";
+        input = ?("0x" # ecrecoverInputHex);
+        accessList = null;
+        blobVersionedHashes = null;
+        blobs = null;
+        chainId = null;
+        from = null;
+        gas = null;
+        gasPrice = null;
+        maxFeePerBlobGas = null;
+        maxFeePerGas = null;
+        maxPriorityFeePerGas = null;
+        nonce = null;
+        type_ = null;
+        value = null;
+      };
+      block = null;
+    };
+    let recoveredAddressLower = switch (await (with cycles = CYCLE_BUDGET) evmRpc.eth_call(chainToRpcServices(req.chain), null, ecrecoverCallArgs)) {
+      case (#Consistent(#Ok(hexOut))) {
+        let stripped = toLowerHex(stripHexPrefix(hexOut));
+        if (stripped.size() != 64) return #err(#InvalidSignature("ecrecover returned invalid length"));
+        var seenNonZero = false;
+        var trimmed = "";
+        for (c in stripped.chars()) {
+          if (seenNonZero or c != '0') {
+            seenNonZero := true;
+            trimmed #= Text.fromChar(c);
+          };
+        };
+        if (trimmed.size() == 0) { "0" } else { trimmed };
+      };
+      case (#Consistent(#Err(err))) { return #err(#EvmRpcError("ecrecover RPC error: " # debug_show err)) };
+      case (#Inconsistent(results)) { return #err(#EvmRpcError("ecrecover inconsistent RPC result: " # debug_show results)) };
+    };
+    let expectedAddressLower = toLowerHex(stripHexPrefix(req.evmAddress));
+    let normalizedRecovered = if (recoveredAddressLower.size() >= 40) {
+      let chars = recoveredAddressLower.chars();
+      var out = "";
+      var skip = recoveredAddressLower.size() - 40;
+      for (c in chars) {
+        if (skip > 0) { skip -= 1 } else { out #= Text.fromChar(c) };
+      };
+      out;
+    } else {
+      var out = "";
+      var pad : Nat = 40 - recoveredAddressLower.size();
+      while (pad > 0) { out #= "0"; pad -= 1 };
+      out # recoveredAddressLower;
+    };
+    // Step D: recovered address must match claimed evmAddress (case-insensitive / lowercase compare)
+    if (normalizedRecovered != expectedAddressLower) return #err(#InvalidSignature("signature does not match evmAddress"));
+
+    // Step E: EVM balance check (after ownership proof)
     let balanceResult = await checkBalance(req.chain, req.tokenAddress, req.evmAddress);
     let balance = switch (balanceResult) {
       case (#ok(b)) { b };
@@ -473,12 +796,12 @@ persistent actor {
       case (#err(#EvmRpcError(msg))) { return #err(#EvmRpcError(msg)) };
     };
 
-    // Step 2: Threshold comparison
+    // Threshold comparison
     if (balance < req.threshold) {
       return #err(#InsufficientBalance({ required = req.threshold; actual = balance }));
     };
 
-    // Step 3: VetKD key derivation
+    // Step F: VetKD key derivation
     let derivationInput = computeDerivationInput(req.chain, req.tokenAddress, req.threshold, req.cid);
     try {
       let encryptedKey = await deriveKey(derivationInput, req.transportPublicKey);

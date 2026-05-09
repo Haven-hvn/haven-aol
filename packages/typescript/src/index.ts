@@ -9,6 +9,7 @@ export type {
   GateError,
   InsufficientBalanceError,
   DecryptOptions,
+  GateRequestTypedData,
 } from "./types.js";
 export { VALID_CHAINS } from "./types.js";
 
@@ -18,3 +19,4 @@ export { computeDerivationInput } from "./derivation.js";
 export { createTransportKeyPair, recoverVetKey, ibeDecryptAesKey, decryptFile } from "./crypto.js";
 export { requestDecryptionKey, fetchVerificationKey } from "./canister.js";
 export { decryptGatedFile, HavenAolError } from "./decrypt.js";
+export { buildGateRequestTypedData, parseSignatureHex } from "./eip712.js";

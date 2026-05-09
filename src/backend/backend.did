@@ -13,6 +13,10 @@ type GateRequest = record {
   cid : text;
   evmAddress : text;
   transportPublicKey : blob;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
 };
 
 type GateError = variant {
@@ -21,6 +25,8 @@ type GateError = variant {
   InvalidThreshold;
   EvmRpcError : text;
   VetKDError : text;
+  InvalidSignature : text;
+  NonceAlreadyUsed;
 };
 
 type GateResult = variant {

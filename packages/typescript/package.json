@@ -13,11 +13,12 @@
     "@dfinity/agent": "^2.2.0",
     "@dfinity/candid": "^2.2.0",
     "@dfinity/principal": "^2.2.0",
-    "@dfinity/vetkeys": "0.4.0"
+    "@dfinity/vetkeys": "0.4.0",
+    "ethers": "^6.16.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
   },
   "engines": {
     "node": ">=18"
