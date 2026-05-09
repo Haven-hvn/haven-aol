@@ -45,6 +45,10 @@ export async function decryptGatedFile(options: DecryptOptions): Promise<Uint8Ar
     cid: metadata.cid,
     evmAddress,
     transportPublicKey: publicKey,
+    nonce: options.nonce,
+    signature: options.signature,
+    eip712ChainId: options.eip712ChainId,
+    eip712VerifyingContract: options.eip712VerifyingContract,
   });
 
   if ("err" in result) {
