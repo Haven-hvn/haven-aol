@@ -1,4 +1,4 @@
-import { HttpAgent, AnonymousIdentity } from "@dfinity/agent";
+import { HttpAgent, AnonymousIdentity } from "@icp-sdk/core/agent";
 import { DecryptOptions } from "./types.js";
 import { parseGateMetadata } from "./metadata.js";
 import { computeDerivationInput } from "./derivation.js";

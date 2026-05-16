@@ -10,9 +10,7 @@
     "test": "node --test dist/test/*.test.js"
   },
   "dependencies": {
-    "@dfinity/agent": "^2.2.0",
-    "@dfinity/candid": "^2.2.0",
-    "@dfinity/principal": "^2.2.0",
+    "@icp-sdk/core": "^5.4.0",
     "@dfinity/vetkeys": "0.4.0",
     "ethers": "^6.16.0"
   },

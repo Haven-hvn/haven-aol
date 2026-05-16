@@ -325,7 +325,7 @@ describe("TC-3: Insufficient Balance", { skip: OFFLINE }, () => {
     requestDecryptionKey = canisterMod.requestDecryptionKey;
     createTransportKeyPair = cryptoMod.createTransportKeyPair;
 
-    const { HttpAgent, AnonymousIdentity } = require("@dfinity/agent");
+    const { HttpAgent, AnonymousIdentity } = await import("@icp-sdk/core/agent");
 
     // Get canister ID from local deployment
     canisterId = execSync("icp canister status backend -e local -i", {
@@ -391,7 +391,7 @@ describe("TC-4: Input Validation", { skip: OFFLINE }, () => {
     requestDecryptionKey = canisterMod.requestDecryptionKey;
     createTransportKeyPair = cryptoMod.createTransportKeyPair;
 
-    const { HttpAgent, AnonymousIdentity } = require("@dfinity/agent");
+    const { HttpAgent, AnonymousIdentity } = await import("@icp-sdk/core/agent");
 
     canisterId = execSync("icp canister status backend -e local -i", {
       encoding: "utf-8",
