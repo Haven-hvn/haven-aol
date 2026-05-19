@@ -5,12 +5,14 @@ import Nat64 "mo:core/Nat64";
 import VarArray "mo:core/VarArray";
 import Text "mo:core/Text";
 import Char "mo:core/Char";
+import Array "mo:core/Array";
 import Blob "mo:core/Blob";
 import Error "mo:core/Error";
 import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
 import Map "mo:core/Map";
 import Sha256 "mo:sha2/Sha256";
+import Secp256k1 "mo:secp256k1";
 
 // Haven-AOL (Always Online on DFINITY ICP): smart access management with conditional keys
 // for web3 — DAOs, DataDAOs, agent swarms, and shared gated resources.
@@ -220,6 +222,10 @@ persistent actor {
       case null { "key_1" }; // default: local dev key (auto-provisioned by replica)
     };
   };
+
+  // Memoized VetKD public key (96 bytes, deterministic constant).
+  // Populated on first warmup; survives canister upgrades.
+  persistent var cachedVetKDPublicKey : ?Blob = null;
 
   func vetkdKeyId() : VetKdKeyId {
     { curve = #bls12_381_g2; name = vetkdKeyName };
@@ -563,13 +569,24 @@ persistent actor {
   // ── Public endpoints ───────────────────────────────────────────────
 
   /// Returns the canister's VetKD verification public key.
-  /// This is an update call (not query) because it makes an inter-canister call.
-  public func getVetKDPublicKey() : async Blob {
+  /// Now a query call — returns from memoized state (no inter-canister call).
+  public query func getVetKDPublicKey() : async Blob {
+    switch (cachedVetKDPublicKey) {
+      case (?key) { key };
+      case null {
+        Runtime.trap("VetKD public key not yet cached. Call warmupVetKDPublicKey() first.");
+      };
+    };
+  };
+
+  /// Populate the VetKD public key cache. Call once after deploy or on key rotation.
+  public func warmupVetKDPublicKey() : async Blob {
     let response = await vetkdCanister.vetkd_public_key({
       canister_id = null;
       context = VETKD_CONTEXT;
       key_id = vetkdKeyId();
     });
+    cachedVetKDPublicKey := ?response.public_key;
     response.public_key;
   };
 
@@ -667,7 +684,7 @@ persistent actor {
   };
 
   public type GateResult = {
-    #ok : Blob;
+    #ok : { encrypted_key : Blob; verification_key : Blob };
     #err : GateError;
   };
 
@@ -726,69 +743,23 @@ persistent actor {
       case null { return #err(#InvalidSignature("failed to construct digest")) };
     };
 
-    // Step C: Signature recovery via ecrecover precompile
+    // Step C: Native signature recovery via secp256k1 package (synchronous — <20ms)
     let signatureBytes = Blob.toArray(req.signature);
-    let rBlob = Blob.fromArray([signatureBytes[0], signatureBytes[1], signatureBytes[2], signatureBytes[3], signatureBytes[4], signatureBytes[5], signatureBytes[6], signatureBytes[7], signatureBytes[8], signatureBytes[9], signatureBytes[10], signatureBytes[11], signatureBytes[12], signatureBytes[13], signatureBytes[14], signatureBytes[15], signatureBytes[16], signatureBytes[17], signatureBytes[18], signatureBytes[19], signatureBytes[20], signatureBytes[21], signatureBytes[22], signatureBytes[23], signatureBytes[24], signatureBytes[25], signatureBytes[26], signatureBytes[27], signatureBytes[28], signatureBytes[29], signatureBytes[30], signatureBytes[31]]);
-    let sBlob = Blob.fromArray([signatureBytes[32], signatureBytes[33], signatureBytes[34], signatureBytes[35], signatureBytes[36], signatureBytes[37], signatureBytes[38], signatureBytes[39], signatureBytes[40], signatureBytes[41], signatureBytes[42], signatureBytes[43], signatureBytes[44], signatureBytes[45], signatureBytes[46], signatureBytes[47], signatureBytes[48], signatureBytes[49], signatureBytes[50], signatureBytes[51], signatureBytes[52], signatureBytes[53], signatureBytes[54], signatureBytes[55], signatureBytes[56], signatureBytes[57], signatureBytes[58], signatureBytes[59], signatureBytes[60], signatureBytes[61], signatureBytes[62], signatureBytes[63]]);
-    let vByte = Nat8.toNat(signatureBytes[64]);
+    let rBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i]));
+    let sBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i + 32]));
+    let vByte = signatureBytes[64];
     if (vByte != 27 and vByte != 28) return #err(#InvalidSignature("v must be 27 or 28"));
-    let ecrecoverInputHex = blobToHex(digest) # encodeUint256(vByte) # blobToHex(rBlob) # blobToHex(sBlob);
-    let ecrecoverCallArgs : CallArgs = {
-      transaction = {
-        to = ?"0x0000000000000000000000000000000000000001";
-        input = ?("0x" # ecrecoverInputHex);
-        accessList = null;
-        blobVersionedHashes = null;
-        blobs = null;
-        chainId = null;
-        from = null;
-        gas = null;
-        gasPrice = null;
-        maxFeePerBlobGas = null;
-        maxFeePerGas = null;
-        maxPriorityFeePerGas = null;
-        nonce = null;
-        type_ = null;
-        value = null;
-      };
-      block = null;
-    };
-    let recoveredAddressLower = switch (await (with cycles = CYCLE_BUDGET) evmRpc.eth_call(chainToRpcServices(req.chain), null, ecrecoverCallArgs)) {
-      case (#Consistent(#Ok(hexOut))) {
-        let stripped = toLowerHex(stripHexPrefix(hexOut));
-        if (stripped.size() != 64) return #err(#InvalidSignature("ecrecover returned invalid length"));
-        var seenNonZero = false;
-        var trimmed = "";
-        for (c in stripped.chars()) {
-          if (seenNonZero or c != '0') {
-            seenNonZero := true;
-            trimmed #= Text.fromChar(c);
-          };
-        };
-        if (trimmed.size() == 0) { "0" } else { trimmed };
-      };
-      case (#Consistent(#Err(err))) { return #err(#EvmRpcError("ecrecover RPC error: " # debug_show err)) };
-      case (#Inconsistent(results)) { return #err(#EvmRpcError("ecrecover inconsistent RPC result: " # debug_show results)) };
-    };
-    let expectedAddressLower = toLowerHex(stripHexPrefix(req.evmAddress));
-    let normalizedRecovered = if (recoveredAddressLower.size() >= 40) {
-      let chars = recoveredAddressLower.chars();
-      var out = "";
-      var skip = recoveredAddressLower.size() - 40;
-      for (c in chars) {
-        if (skip > 0) { skip -= 1 } else { out #= Text.fromChar(c) };
-      };
-      out;
-    } else {
-      var out = "";
-      var pad : Nat = 40 - recoveredAddressLower.size();
-      while (pad > 0) { out #= "0"; pad -= 1 };
-      out # recoveredAddressLower;
-    };
-    // Step D: recovered address must match claimed evmAddress (case-insensitive / lowercase compare)
-    if (normalizedRecovered != expectedAddressLower) return #err(#InvalidSignature("signature does not match evmAddress"));
 
-    // Step E: EVM balance check (after ownership proof)
+    let recoveredAddressLower = switch (Secp256k1.ecrecover(digest, vByte, rBlob, sBlob, keccak256)) {
+      case (#ok(addressBlob)) { blobToHex(addressBlob) };
+      case (#err(msg)) { return #err(#InvalidSignature("ecrecover failed: " # msg)) };
+    };
+
+    // Step D: recovered address must match claimed evmAddress (case-insensitive / lowercase compare)
+    let expectedAddressLower = toLowerHex(stripHexPrefix(req.evmAddress));
+    if (recoveredAddressLower != expectedAddressLower) return #err(#InvalidSignature("signature does not match evmAddress"));
+
+    // Step E: Balance check (only remaining EVM RPC call)
     let balanceResult = await checkBalance(req.chain, req.tokenAddress, req.evmAddress);
     let balance = switch (balanceResult) {
       case (#ok(b)) { b };
@@ -805,7 +776,23 @@ persistent actor {
     let derivationInput = computeDerivationInput(req.chain, req.tokenAddress, req.threshold, req.cid);
     try {
       let encryptedKey = await deriveKey(derivationInput, req.transportPublicKey);
-      #ok(encryptedKey);
+
+      // Bundle the verification key — read from memoized state (zero cost).
+      // Lazy warmup if not yet cached (first call after deploy).
+      let verificationKey = switch (cachedVetKDPublicKey) {
+        case (?k) { k };
+        case null {
+          let resp = await vetkdCanister.vetkd_public_key({
+            canister_id = null;
+            context = VETKD_CONTEXT;
+            key_id = vetkdKeyId();
+          });
+          cachedVetKDPublicKey := ?resp.public_key;
+          resp.public_key;
+        };
+      };
+
+      #ok({ encrypted_key = encryptedKey; verification_key = verificationKey });
     } catch (e) {
       #err(#VetKDError(Error.message(e)));
     };

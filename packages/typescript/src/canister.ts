@@ -35,15 +35,46 @@ const GateErrorVariant = IDL.Variant({
 });
 
 const GateResultVariant = IDL.Variant({
-  ok: IDL.Vec(IDL.Nat8),
+  ok: IDL.Record({
+    encrypted_key: IDL.Vec(IDL.Nat8),
+    verification_key: IDL.Vec(IDL.Nat8),
+  }),
   err: GateErrorVariant,
 });
 
 const idlFactory = () =>
   IDL.Service({
     requestDecryptionKey: IDL.Func([GateRequestType], [GateResultVariant], []),
-    getVetKDPublicKey: IDL.Func([], [IDL.Vec(IDL.Nat8)], []),
+    getVetKDPublicKey: IDL.Func([], [IDL.Vec(IDL.Nat8)], ["query"]),
   });
+
+// ============================================================================
+// Actor Instance Reuse
+// ============================================================================
+
+/**
+ * Cache Actor instances per HttpAgent to avoid redundant IDL parsing.
+ * Uses WeakMap so actors are GC'd when the agent is GC'd.
+ */
+const actorCache = new WeakMap<HttpAgent, Map<string, ReturnType<typeof Actor.createActor>>>();
+
+function getOrCreateActor(agent: HttpAgent, canisterId: string) {
+  let agentMap = actorCache.get(agent);
+  if (!agentMap) {
+    agentMap = new Map();
+    actorCache.set(agent, agentMap);
+  }
+  let actor = agentMap.get(canisterId);
+  if (!actor) {
+    actor = Actor.createActor(idlFactory, { agent, canisterId });
+    agentMap.set(canisterId, actor);
+  }
+  return actor;
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
 
 function buildChainVariant(chain: Chain): Record<string, null> {
   return { [chain]: null };
@@ -51,6 +82,9 @@ function buildChainVariant(chain: Chain): Record<string, null> {
 
 /**
  * Call the canister's requestDecryptionKey endpoint.
+ *
+ * Returns both the encrypted derived key AND the verification key in one
+ * response — eliminates the need for a separate fetchVerificationKey call.
  */
 export async function requestDecryptionKey(
   agent: HttpAgent,
@@ -68,8 +102,8 @@ export async function requestDecryptionKey(
     eip712VerifyingContract: string;
   },
 ): Promise<GateResult> {
-  const actor = Actor.createActor(idlFactory, { agent, canisterId });
-  const result = await actor.requestDecryptionKey({
+  const actor = getOrCreateActor(agent, canisterId);
+  const raw = await actor.requestDecryptionKey({
     chain: buildChainVariant(request.chain),
     tokenAddress: request.tokenAddress,
     threshold: request.threshold,
@@ -80,18 +114,28 @@ export async function requestDecryptionKey(
     signature: request.signature,
     eip712ChainId: request.eip712ChainId,
     eip712VerifyingContract: request.eip712VerifyingContract,
-  }) as GateResult;
-  return result;
+  }) as { ok?: { encrypted_key: Uint8Array; verification_key: Uint8Array }; err?: unknown };
+
+  if (raw.ok) {
+    return {
+      ok: {
+        encryptedKey: new Uint8Array(raw.ok.encrypted_key),
+        verificationKey: new Uint8Array(raw.ok.verification_key),
+      },
+    };
+  }
+  return { err: raw.err } as GateResult;
 }
 
 /**
  * Call the canister's getVetKDPublicKey endpoint (verification key).
+ * Uses query call (fast path, ~200ms instead of ~5s).
  */
 export async function fetchVerificationKey(
   agent: HttpAgent,
   canisterId: string,
 ): Promise<Uint8Array> {
-  const actor = Actor.createActor(idlFactory, { agent, canisterId });
+  const actor = getOrCreateActor(agent, canisterId);
   const result = (await actor.getVetKDPublicKey()) as Uint8Array;
   return new Uint8Array(result);
 }
