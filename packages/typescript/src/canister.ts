@@ -1,6 +1,24 @@
-import { Actor, HttpAgent } from "@icp-sdk/core/agent";
+import {
+  Actor,
+  HttpAgent,
+  type ActorMethod,
+  type ActorSubclass,
+} from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
-import { Chain, GateResult } from "./types.js";
+import { Chain, GateResult, type GateRequest } from "./types.js";
+
+/** Candid wire shape returned by `requestDecryptionKey`. */
+interface RawGateResultOk {
+  encrypted_key: Uint8Array | number[];
+  verification_key: Uint8Array | number[];
+}
+
+type RawGateResult = { ok: RawGateResultOk } | { err: unknown };
+
+interface HavenAolCanisterActor {
+  requestDecryptionKey: ActorMethod<[GateRequest], RawGateResult>;
+  getVetKDPublicKey: ActorMethod<[], Uint8Array | number[]>;
+}
 
 // Candid IDL factory for the Haven-AOL backend canister
 const ChainVariant = IDL.Variant({
@@ -56,9 +74,15 @@ const idlFactory = () =>
  * Cache Actor instances per HttpAgent to avoid redundant IDL parsing.
  * Uses WeakMap so actors are GC'd when the agent is GC'd.
  */
-const actorCache = new WeakMap<HttpAgent, Map<string, ReturnType<typeof Actor.createActor>>>();
+const actorCache = new WeakMap<
+  HttpAgent,
+  Map<string, ActorSubclass<HavenAolCanisterActor>>
+>();
 
-function getOrCreateActor(agent: HttpAgent, canisterId: string) {
+function getOrCreateActor(
+  agent: HttpAgent,
+  canisterId: string,
+): ActorSubclass<HavenAolCanisterActor> {
   let agentMap = actorCache.get(agent);
   if (!agentMap) {
     agentMap = new Map();
@@ -66,7 +90,10 @@ function getOrCreateActor(agent: HttpAgent, canisterId: string) {
   }
   let actor = agentMap.get(canisterId);
   if (!actor) {
-    actor = Actor.createActor(idlFactory, { agent, canisterId });
+    actor = Actor.createActor<HavenAolCanisterActor>(idlFactory, {
+      agent,
+      canisterId,
+    });
     agentMap.set(canisterId, actor);
   }
   return actor;
@@ -114,9 +141,9 @@ export async function requestDecryptionKey(
     signature: request.signature,
     eip712ChainId: request.eip712ChainId,
     eip712VerifyingContract: request.eip712VerifyingContract,
-  }) as { ok?: { encrypted_key: Uint8Array; verification_key: Uint8Array }; err?: unknown };
+  });
 
-  if (raw.ok) {
+  if ("ok" in raw) {
     return {
       ok: {
         encryptedKey: new Uint8Array(raw.ok.encrypted_key),
@@ -136,6 +163,6 @@ export async function fetchVerificationKey(
   canisterId: string,
 ): Promise<Uint8Array> {
   const actor = getOrCreateActor(agent, canisterId);
-  const result = (await actor.getVetKDPublicKey()) as Uint8Array;
+  const result = await actor.getVetKDPublicKey();
   return new Uint8Array(result);
 }
