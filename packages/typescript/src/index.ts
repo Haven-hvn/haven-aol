@@ -17,6 +17,6 @@ export { VALID_CHAINS } from "./types.js";
 export { parseGateMetadata } from "./metadata.js";
 export { computeDerivationInput } from "./derivation.js";
 export { createTransportKeyPair, recoverVetKey, ibeDecryptAesKey, decryptFile } from "./crypto.js";
-export { requestDecryptionKey, fetchVerificationKey } from "./canister.js";
+export { requestDecryptionKey, fetchVerificationKey, fetchAttestationPublicKey } from "./canister.js";
 export { decryptGatedFile, HavenAolError } from "./decrypt.js";
 export { buildGateRequestTypedData, parseSignatureHex } from "./eip712.js";

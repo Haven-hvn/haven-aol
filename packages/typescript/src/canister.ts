@@ -18,6 +18,7 @@ type RawGateResult = { ok: RawGateResultOk } | { err: unknown };
 interface HavenAolCanisterActor {
   requestDecryptionKey: ActorMethod<[GateRequest], RawGateResult>;
   getVetKDPublicKey: ActorMethod<[], Uint8Array | number[]>;
+  getAttestationPublicKey: ActorMethod<[], Uint8Array | number[]>;
 }
 
 // Candid IDL factory for the Haven-AOL backend canister
@@ -64,6 +65,7 @@ const idlFactory = () =>
   IDL.Service({
     requestDecryptionKey: IDL.Func([GateRequestType], [GateResultVariant], []),
     getVetKDPublicKey: IDL.Func([], [IDL.Vec(IDL.Nat8)], ["query"]),
+    getAttestationPublicKey: IDL.Func([], [IDL.Vec(IDL.Nat8)], ["query"]),
   });
 
 // ============================================================================
@@ -164,5 +166,19 @@ export async function fetchVerificationKey(
 ): Promise<Uint8Array> {
   const actor = getOrCreateActor(agent, canisterId);
   const result = await actor.getVetKDPublicKey();
+  return new Uint8Array(result);
+}
+
+/**
+ * Call the canister's getAttestationPublicKey endpoint.
+ * Returns the Ed25519 public key used for attestation signatures.
+ * Uses query call (fast path, ~200ms).
+ */
+export async function fetchAttestationPublicKey(
+  agent: HttpAgent,
+  canisterId: string,
+): Promise<Uint8Array> {
+  const actor = getOrCreateActor(agent, canisterId);
+  const result = await actor.getAttestationPublicKey();
   return new Uint8Array(result);
 }
