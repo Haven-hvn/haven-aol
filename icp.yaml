@@ -24,3 +24,4 @@ environments:
           PUBLIC_CANISTER_ID:evm_rpc: "7hfb6-caaaa-aaaar-qadga-cai"
           VETKD_CANISTER_ID: "vrqyr-saaaa-aaaan-qzn4q-cai"
           VETKD_KEY_NAME: "insecure_test_key_1"
+          SCHNORR_KEY_NAME: "key_1"

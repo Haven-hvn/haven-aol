@@ -34,8 +34,39 @@ type GateResult = variant {
   err : GateError;
 };
 
+type AttestRequest = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  cidHash : text;
+  evmAddress : text;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+type Attestation = record {
+  evmAddress : text;
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  balanceAtCheck : nat;
+  cidHash : text;
+  timestamp : nat;
+};
+
+type AttestResult = variant {
+  ok : record { attestation : Attestation; signature : blob };
+  err : GateError;
+};
+
 service : {
   requestDecryptionKey : (GateRequest) -> (GateResult);
   getVetKDPublicKey : () -> (blob) query;
   warmupVetKDPublicKey : () -> (blob);
+  attestHolding : (AttestRequest) -> (AttestResult);
+  getAttestationPublicKey : () -> (blob) query;
+  warmupAttestationPublicKey : () -> (blob);
+  health : () -> (text) query;
 }

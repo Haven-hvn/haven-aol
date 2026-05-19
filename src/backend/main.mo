@@ -11,6 +11,7 @@ import Error "mo:core/Error";
 import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
 import Map "mo:core/Map";
+import Principal "mo:core/Principal";
 import Sha256 "mo:sha2/Sha256";
 import Secp256k1 "mo:secp256k1";
 
@@ -171,6 +172,41 @@ persistent actor {
     vetkd_derive_key : (VetKdDeriveKeyRequest) -> async VetKdDeriveKeyResponse;
   };
 
+  // ── IC Management Canister types (for t-Schnorr signing) ───────────
+
+  type SchnorrAlgorithm = { #bip340secp256k1; #ed25519 };
+
+  type SchnorrKeyId = {
+    algorithm : SchnorrAlgorithm;
+    name : Text;
+  };
+
+  type SchnorrPublicKeyRequest = {
+    canister_id : ?Principal;
+    derivation_path : [Blob];
+    key_id : SchnorrKeyId;
+  };
+
+  type SchnorrPublicKeyResponse = {
+    public_key : Blob;
+    chain_code : Blob;
+  };
+
+  type SignWithSchnorrRequest = {
+    message : Blob;
+    derivation_path : [Blob];
+    key_id : SchnorrKeyId;
+  };
+
+  type SignWithSchnorrResponse = {
+    signature : Blob;
+  };
+
+  type IcManagementCanister = actor {
+    schnorr_public_key : (SchnorrPublicKeyRequest) -> async SchnorrPublicKeyResponse;
+    sign_with_schnorr : (SignWithSchnorrRequest) -> async SignWithSchnorrResponse;
+  };
+
   // ── Public types ───────────────────────────────────────────────────
 
   public type Chain = {
@@ -192,6 +228,8 @@ persistent actor {
   let APP_NAME : Text = "HavenAOL";
   let EIP712_DOMAIN_TYPEHASH_HEX : Text = "8cad95687ba82c2ce50e74f7b754645e5117c3a5bec8151c0726d5857980a866";
   let EIP712_GATE_REQUEST_TYPEHASH_HEX : Text = "88160239aa0076952ec94d7cf6b6b51da1765acd803b051b6d06b3f27623f2c0";
+  // keccak256("AttestRequest(address evmAddress,bytes32 cidHash,uint256 nonce)")
+  let EIP712_ATTEST_REQUEST_TYPEHASH_HEX : Text = "7e4a5ca1db93a70b82733f9735aaa5682d44760b336ea437fea3715550a833b0";
   // VetKD context — protocol v1 identifier (stable across Haven-AOL deployments).
   let VETKD_CONTEXT : Blob = Text.encodeUtf8("accessol_v1");
   let usedNonces = Map.empty<Text, Bool>();
@@ -230,6 +268,25 @@ persistent actor {
   func vetkdKeyId() : VetKdKeyId {
     { curve = #bls12_381_g2; name = vetkdKeyName };
   };
+
+  // ── IC Management Canister reference (for t-Schnorr) ───────────────
+
+  transient let ic : IcManagementCanister = actor ("aaaaa-aa") : IcManagementCanister;
+
+  transient let schnorrKeyName : Text = do {
+    switch (Runtime.envVar("SCHNORR_KEY_NAME")) {
+      case (?v) { v };
+      case null { "key_1" }; // default: local dev key (auto-provisioned by replica)
+    };
+  };
+
+  func schnorrKeyId() : SchnorrKeyId {
+    { algorithm = #ed25519; name = schnorrKeyName };
+  };
+
+  // Memoized t-Schnorr/Ed25519 attestation public key (32 bytes).
+  // Populated on first warmup; survives canister upgrades.
+  var cachedAttestPublicKey : ?Blob = null;
 
   // ── Chain mapping ──────────────────────────────────────────────────
 
@@ -524,6 +581,37 @@ persistent actor {
     keccak256(scopeBlob);
   };
 
+  // EIP-712 struct hash for AttestRequest(address evmAddress, bytes32 cidHash, uint256 nonce)
+  func eip712AttestStructHash(evmAddress : Text, cidHash : Text, nonce : Nat) : ?Blob {
+    let ?address32 = encodeAddress32(evmAddress) else return null;
+    // cidHash is a hex-encoded 32-byte hash (no 0x prefix expected, but strip if present)
+    let cidHashHex = leftPad32(stripHexPrefix(cidHash));
+    let packedHex = EIP712_ATTEST_REQUEST_TYPEHASH_HEX # address32 # cidHashHex # encodeUint256(nonce);
+    let ?packedBlob = hexToBlob(packedHex) else return null;
+    ?keccak256(packedBlob);
+  };
+
+  // Nonce replay key scoped to attestation (separate from gate request nonces)
+  func attestNonceReplayKey(domainSeparator : Blob) : Blob {
+    let scopeHex = blobToHex(domainSeparator) # EIP712_ATTEST_REQUEST_TYPEHASH_HEX;
+    let ?scopeBlob = hexToBlob(scopeHex) else Runtime.trap("internal attest nonce scope hex encoding failure");
+    keccak256(scopeBlob);
+  };
+
+  // ── Attestation encoding (deterministic canonical format) ──────────
+  // Format: "HAVEN_ATTEST_V1:{chain}:{tokenAddress}:{threshold}:{evmAddress}:{cidHash}:{timestamp}:{balanceAtCheck}"
+  func encodeAttestation(a : Attestation) : Blob {
+    let preimage = "HAVEN_ATTEST_V1:"
+      # chainToText(a.chain) # ":"
+      # a.tokenAddress # ":"
+      # Nat.toText(a.threshold) # ":"
+      # a.evmAddress # ":"
+      # a.cidHash # ":"
+      # Nat.toText(a.timestamp) # ":"
+      # Nat.toText(a.balanceAtCheck);
+    Text.encodeUtf8(preimage);
+  };
+
   // ── Address validation ─────────────────────────────────────────────
 
   func validateEvmAddress(addr : Text) : Result.Result<Text, Text> {
@@ -688,6 +776,35 @@ persistent actor {
     #err : GateError;
   };
 
+  // ── Public types for attestation endpoint ──────────────────────────
+
+  public type AttestRequest = {
+    chain : Chain;
+    tokenAddress : Text;
+    threshold : Nat;
+    cidHash : Text;
+    evmAddress : Text;
+    nonce : Nat;
+    signature : Blob;
+    eip712ChainId : Nat;
+    eip712VerifyingContract : Text;
+  };
+
+  public type Attestation = {
+    evmAddress : Text;
+    chain : Chain;
+    tokenAddress : Text;
+    threshold : Nat;
+    balanceAtCheck : Nat;
+    cidHash : Text;
+    timestamp : Nat;
+  };
+
+  public type AttestResult = {
+    #ok : { attestation : Attestation; signature : Blob };
+    #err : GateError;
+  };
+
   // ── Input validation ───────────────────────────────────────────────
 
   func validateAddress(addr : Text, fieldName : Text) : ?GateError {
@@ -795,6 +912,127 @@ persistent actor {
       #ok({ encrypted_key = encryptedKey; verification_key = verificationKey });
     } catch (e) {
       #err(#VetKDError(Error.message(e)));
+    };
+  };
+
+  // ── Attestation endpoints ──────────────────────────────────────────
+
+  /// Returns the canister's t-Schnorr/Ed25519 attestation public key.
+  /// Query call — returns from memoized state (no inter-canister call).
+  /// Readers use this to verify attestation signatures offline.
+  public query func getAttestationPublicKey() : async Blob {
+    switch (cachedAttestPublicKey) {
+      case (?key) { key };
+      case null {
+        Runtime.trap("Attestation public key not yet cached. Call warmupAttestationPublicKey() first.");
+      };
+    };
+  };
+
+  /// Populate the attestation public key cache. Call once after deploy.
+  public func warmupAttestationPublicKey() : async Blob {
+    let response = await (with cycles = CYCLE_BUDGET) ic.schnorr_public_key({
+      canister_id = null;
+      derivation_path = [Text.encodeUtf8("haven_attest_v1")];
+      key_id = schnorrKeyId();
+    });
+    cachedAttestPublicKey := ?response.public_key;
+    response.public_key;
+  };
+
+  /// Verify token holding and produce a canister-signed attestation.
+  /// Steps: EIP-712 wallet proof → balance check → t-Schnorr sign attestation.
+  public func attestHolding(req : AttestRequest) : async AttestResult {
+    // ── Step A: Input validation ──
+    switch (validateAddress(req.tokenAddress, "tokenAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.evmAddress, "evmAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.eip712VerifyingContract, "eip712VerifyingContract")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    if (req.threshold == 0) return #err(#InvalidThreshold);
+    if (req.cidHash.size() == 0) return #err(#InvalidAddress("cidHash must not be empty"));
+    if (Blob.toArray(req.signature).size() != 65) return #err(#InvalidSignature("signature must be 65 bytes"));
+
+    // ── Step B: EIP-712 signature verification ──
+    // Uses AttestRequest type hash (distinct from GateRequest to prevent cross-endpoint replay)
+    let domainSeparator = switch (eip712DomainSeparator(APP_NAME, req.eip712ChainId, req.eip712VerifyingContract)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct domain separator")) };
+    };
+
+    // Nonce replay check (scoped separately from requestDecryptionKey nonces)
+    let nonceScopeKey = attestNonceReplayKey(domainSeparator);
+    let scopedNonce = blobToHex(nonceScopeKey) # ":attest:" # Nat.toText(req.nonce);
+    if (Map.get(usedNonces, Text.compare, scopedNonce) != null) {
+      return #err(#NonceAlreadyUsed);
+    };
+    Map.add(usedNonces, Text.compare, scopedNonce, true);
+
+    let structHash = switch (eip712AttestStructHash(req.evmAddress, req.cidHash, req.nonce)) {
+      case (?h) { h };
+      case null { return #err(#InvalidSignature("failed to construct attest struct hash")) };
+    };
+    let digest = switch (eip712Digest(domainSeparator, structHash)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct digest")) };
+    };
+
+    // ecrecover
+    let signatureBytes = Blob.toArray(req.signature);
+    let rBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i]));
+    let sBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i + 32]));
+    let vByte = signatureBytes[64];
+    if (vByte != 27 and vByte != 28) return #err(#InvalidSignature("v must be 27 or 28"));
+
+    let recoveredAddressLower = switch (Secp256k1.ecrecover(digest, vByte, rBlob, sBlob, keccak256)) {
+      case (#ok(addressBlob)) { blobToHex(addressBlob) };
+      case (#err(msg)) { return #err(#InvalidSignature("ecrecover failed: " # msg)) };
+    };
+    let expectedAddressLower = toLowerHex(stripHexPrefix(req.evmAddress));
+    if (recoveredAddressLower != expectedAddressLower) return #err(#InvalidSignature("signature does not match evmAddress"));
+
+    // ── Step C: Balance check ──
+    let balanceResult = await checkBalance(req.chain, req.tokenAddress, req.evmAddress);
+    let balance = switch (balanceResult) {
+      case (#ok(b)) { b };
+      case (#err(#InvalidAddress(msg))) { return #err(#InvalidAddress(msg)) };
+      case (#err(#EvmRpcError(msg))) { return #err(#EvmRpcError(msg)) };
+    };
+    if (balance < req.threshold) {
+      return #err(#InsufficientBalance({ required = req.threshold; actual = balance }));
+    };
+
+    // ── Step D: Build attestation struct ──
+    let attestation : Attestation = {
+      evmAddress = req.evmAddress;
+      chain = req.chain;
+      tokenAddress = req.tokenAddress;
+      threshold = req.threshold;
+      balanceAtCheck = balance;
+      cidHash = req.cidHash;
+      timestamp = Runtime.time() / 1_000_000_000;
+    };
+
+    // ── Step E: Sign with t-Schnorr/Ed25519 ──
+    let attestationBytes = encodeAttestation(attestation);
+
+    try {
+      let signatureResult = await (with cycles = CYCLE_BUDGET) ic.sign_with_schnorr({
+        message = attestationBytes;
+        derivation_path = [Text.encodeUtf8("haven_attest_v1")];
+        key_id = schnorrKeyId();
+      });
+
+      #ok({ attestation = attestation; signature = signatureResult.signature });
+    } catch (e) {
+      #err(#VetKDError("t-Schnorr signing failed: " # Error.message(e)));
     };
   };
 
