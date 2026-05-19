@@ -30,11 +30,12 @@ type GateError = variant {
 };
 
 type GateResult = variant {
-  ok : blob;
+  ok : record { encrypted_key : blob; verification_key : blob };
   err : GateError;
 };
 
 service : {
   requestDecryptionKey : (GateRequest) -> (GateResult);
-  getVetKDPublicKey : () -> (blob);
+  getVetKDPublicKey : () -> (blob) query;
+  warmupVetKDPublicKey : () -> (blob);
 }

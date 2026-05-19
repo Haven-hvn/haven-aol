@@ -3,7 +3,7 @@ import { DecryptOptions } from "./types.js";
 import { parseGateMetadata } from "./metadata.js";
 import { computeDerivationInput } from "./derivation.js";
 import { createTransportKeyPair, recoverVetKey, ibeDecryptAesKey, decryptFile } from "./crypto.js";
-import { requestDecryptionKey, fetchVerificationKey } from "./canister.js";
+import { requestDecryptionKey } from "./canister.js";
 
 /**
  * End-to-end orchestrated decryption flow.
@@ -37,7 +37,7 @@ export async function decryptGatedFile(options: DecryptOptions): Promise<Uint8Ar
   // 4. Generate ephemeral transport key pair
   const { secretKey, publicKey } = createTransportKeyPair();
 
-  // 5. Call canister to get encrypted VetKD key
+  // 5. Call canister to get encrypted VetKD key + verification key (bundled)
   const result = await requestDecryptionKey(agent, canisterId, {
     chain: metadata.chain,
     tokenAddress: metadata.tokenAddress,
@@ -55,11 +55,11 @@ export async function decryptGatedFile(options: DecryptOptions): Promise<Uint8Ar
     throw new HavenAolError(result.err);
   }
 
-  // 6. Fetch verification key
-  const verificationKeyBytes = await fetchVerificationKey(agent, canisterId);
+  // 6. Extract bundled verification key from response (no separate fetch needed)
+  const { encryptedKey, verificationKey: verificationKeyBytes } = result.ok;
 
   // 7. Recover VetKD key
-  const vetKey = recoverVetKey(result.ok, secretKey, verificationKeyBytes, derivationInput);
+  const vetKey = recoverVetKey(encryptedKey, secretKey, verificationKeyBytes, derivationInput);
 
   // 8. IBE-decrypt the AES key
   const aesKey = ibeDecryptAesKey(metadata.encryptedAesKey, vetKey);

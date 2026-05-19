@@ -155,11 +155,19 @@ When new backend improvements are ready, use this process in the same environmen
    ```bash
    icp canister install backend -e ic --mode upgrade --identity mainnet-validation-20260506
    ```
-4. Verify post-upgrade status:
+4. Warm up VetKD public key cache (required after first deploy; safe to re-run on upgrades):
+   ```bash
+   icp canister call backend warmupVetKDPublicKey -e ic --identity mainnet-validation-20260506
+   ```
+   > **Why:** `getVetKDPublicKey` is now a query call that reads from persistent cache.
+   > The cache survives upgrades, so this only strictly needs to run once (after the
+   > initial deploy that introduces this change). Running it again is harmless and
+   > ensures the cache is populated.
+5. Verify post-upgrade status:
    ```bash
    icp canister status backend -e ic
    ```
-5. Re-run smoke tests:
+6. Re-run smoke tests:
    ```bash
    ICP_MAINNET_IDENTITY=mainnet-validation-20260506 bash tests/mainnet-smoke.sh
    ```

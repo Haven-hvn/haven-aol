@@ -51,7 +51,7 @@ export type GateError =
   | { InvalidSignature: string }
   | { NonceAlreadyUsed: null };
 
-export type GateResult = { ok: Uint8Array } | { err: GateError };
+export type GateResult = { ok: { encryptedKey: Uint8Array; verificationKey: Uint8Array } } | { err: GateError };
 
 /** Options for the convenience decryptGatedFile function. */
 export interface DecryptOptions {
