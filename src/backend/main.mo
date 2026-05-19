@@ -10,6 +10,8 @@ import Blob "mo:core/Blob";
 import Error "mo:core/Error";
 import Result "mo:core/Result";
 import Runtime "mo:core/Runtime";
+import Int "mo:core/Int";
+import Time "mo:core/Time";
 import Map "mo:core/Map";
 import Principal "mo:core/Principal";
 import Sha256 "mo:sha2/Sha256";
@@ -1017,7 +1019,7 @@ persistent actor {
       threshold = req.threshold;
       balanceAtCheck = balance;
       cidHash = req.cidHash;
-      timestamp = Runtime.time() / 1_000_000_000;
+      timestamp = Int.abs(Time.now() / 1_000_000_000);
     };
 
     // ── Step E: Sign with t-Schnorr/Ed25519 ──
