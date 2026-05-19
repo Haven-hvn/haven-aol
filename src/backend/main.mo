@@ -225,7 +225,7 @@ persistent actor {
 
   // Memoized VetKD public key (96 bytes, deterministic constant).
   // Populated on first warmup; survives canister upgrades.
-  persistent var cachedVetKDPublicKey : ?Blob = null;
+  var cachedVetKDPublicKey : ?Blob = null;
 
   func vetkdKeyId() : VetKdKeyId {
     { curve = #bls12_381_g2; name = vetkdKeyName };
