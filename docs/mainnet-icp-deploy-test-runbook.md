@@ -254,3 +254,6 @@ Logs are sparse unless the canister traps or emits explicit debug output.
 - **Deployment uses wrong identity:** pass `--identity` explicitly in deploy/install commands.
 - **`getVetKDPublicKey` / `getAttestationPublicKey` trap:** run the matching warmup (see §9 step 4).
 - **Warmup hangs on prompt:** pass explicit args `'()'` and pipe `printf 'y\n'` if the CLI asks for confirmation.
+- **`IC0406` / “could not perform remote call” on `attestHolding` or `requestDecryptionKey`:** mainnet `eth_call` needs **~30B** forwarded cycles (10B traps). Backend uses `CYCLE_BUDGET = 30_000_000_000` for EVM RPC + VetKD; `SCHNORR_CYCLE_BUDGET = 35_000_000_000` for signing. Regress with `pytest tests/mainnet_attest_probe.py`.
+- **Upgrade fails “Memory-incompatible program upgrade”:** avoid renaming `let`/`var` bindings in `persistent actor` between releases; change values only when possible.
+- **Install fails “out of cycles”:** `icp canister top-up backend --amount 400b -e ic` then retry upgrade.

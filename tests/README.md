@@ -63,3 +63,16 @@ For TC-2 (full round-trip), a complete end-to-end test requires either:
 2. A mock EVM RPC canister that returns a controlled balance
 
 The test documents what would be needed and runs the portions that can be validated locally (encrypt → metadata → parse → derivation parity). The VetKD + IBE round-trip is validated in TC-5 using offline key derivation.
+
+### Mainnet probes (no haven-cli)
+
+```bash
+# Gate smoke (bash)
+ICP_MAINNET_IDENTITY=mainnet-validation-20260506 bash tests/mainnet-smoke.sh
+
+# Attest + gate IC0406 regression (Python / icp-py-core)
+python3 -m venv .venv-probe && .venv-probe/bin/pip install icp-py-core eth-account pytest
+.venv-probe/bin/python -m pytest tests/mainnet_attest_probe.py -v
+```
+
+`tests/mainnet_attest_probe.py` mirrors haven-cli’s `attestHolding` path. A valid EIP-712 proof with an unfunded wallet should return `#err InsufficientBalance`, not replica reject `IC0406`.
