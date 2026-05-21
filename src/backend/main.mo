@@ -227,6 +227,8 @@ persistent actor {
   // ── Constants ──────────────────────────────────────────────────────
 
   let CYCLE_BUDGET : Nat = 10_000_000_000;
+  // t-Schnorr via management canister: signing costs more than schnorr_public_key (~27B observed).
+  let SCHNORR_CYCLE_BUDGET : Nat = 30_000_000_000;
   let APP_NAME : Text = "HavenAOL";
   let EIP712_DOMAIN_TYPEHASH_HEX : Text = "8cad95687ba82c2ce50e74f7b754645e5117c3a5bec8151c0726d5857980a866";
   let EIP712_GATE_REQUEST_TYPEHASH_HEX : Text = "88160239aa0076952ec94d7cf6b6b51da1765acd803b051b6d06b3f27623f2c0";
@@ -933,7 +935,7 @@ persistent actor {
 
   /// Populate the attestation public key cache. Call once after deploy.
   public func warmupAttestationPublicKey() : async Blob {
-    let response = await (with cycles = CYCLE_BUDGET) ic.schnorr_public_key({
+    let response = await (with cycles = SCHNORR_CYCLE_BUDGET) ic.schnorr_public_key({
       canister_id = null;
       derivation_path = [Text.encodeUtf8("haven_attest_v1")];
       key_id = schnorrKeyId();
@@ -1026,7 +1028,7 @@ persistent actor {
     let attestationBytes = encodeAttestation(attestation);
 
     try {
-      let signatureResult = await (with cycles = CYCLE_BUDGET) ic.sign_with_schnorr({
+      let signatureResult = await (with cycles = SCHNORR_CYCLE_BUDGET) ic.sign_with_schnorr({
         message = attestationBytes;
         derivation_path = [Text.encodeUtf8("haven_attest_v1")];
         key_id = schnorrKeyId();
