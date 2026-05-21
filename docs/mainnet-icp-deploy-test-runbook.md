@@ -117,7 +117,7 @@ icp deploy -e ic --identity mainnet-validation-20260506
 Smoke test script:
 
 - Path: `tests/mainnet-smoke.sh`
-- Purpose: verifies `health`, `getVetKDPublicKey`, and `requestDecryptionKey` error-path behavior + live EVM RPC path
+- Purpose: verifies `health`, `getVetKDPublicKey`, and `requestDecryptionKey` error-path behavior + live EVM RPC path (does not cover attestation; see warmup + `attestHolding` below)
 
 Run from WSL:
 
@@ -155,17 +155,27 @@ When new backend improvements are ready, use this process in the same environmen
    ```bash
    icp canister install backend -e ic --mode upgrade --identity mainnet-validation-20260506
    ```
-4. Warm up VetKD public key cache (required after first deploy; safe to re-run on upgrades):
+4. Warm up **both** public-key caches (required after first deploy; safe to re-run on upgrades):
    ```bash
-   icp canister call backend warmupVetKDPublicKey -e ic --identity mainnet-validation-20260506
+   icp canister call backend warmupVetKDPublicKey '()' -e ic --identity mainnet-validation-20260506
+   icp canister call backend warmupAttestationPublicKey '()' -e ic --identity mainnet-validation-20260506
    ```
-   > **Why:** `getVetKDPublicKey` is now a query call that reads from persistent cache.
-   > The cache survives upgrades, so this only strictly needs to run once (after the
-   > initial deploy that introduces this change). Running it again is harmless and
-   > ensures the cache is populated.
-5. Verify post-upgrade status:
+   From PowerShell (non-interactive):
+   ```powershell
+   wsl bash -lc "cd /mnt/e/Repos/haven-aol && printf 'y\n' | icp canister call backend warmupVetKDPublicKey '()' -e ic --identity mainnet-validation-20260506"
+   wsl bash -lc "cd /mnt/e/Repos/haven-aol && printf 'y\n' | icp canister call backend warmupAttestationPublicKey '()' -e ic --identity mainnet-validation-20260506"
+   ```
+   | Warmup | Query that needs it | Key size |
+   |--------|---------------------|----------|
+   | `warmupVetKDPublicKey` | `getVetKDPublicKey` | 96 bytes (VetKD transport key) |
+   | `warmupAttestationPublicKey` | `getAttestationPublicKey` | 32 bytes (Ed25519 / t-Schnorr) |
+   > **Why:** Both getters are query calls that read from persistent cache populated by warmup.
+   > Caches survive upgrades, so warmups are only strictly required after a fresh deploy or if a query traps with "not yet cached". Re-running is harmless.
+5. Verify post-upgrade status and cached keys:
    ```bash
    icp canister status backend -e ic
+   icp canister call backend getVetKDPublicKey '()' -e ic --identity mainnet-validation-20260506 --query
+   icp canister call backend getAttestationPublicKey '()' -e ic --identity mainnet-validation-20260506 --query
    ```
 6. Re-run smoke tests:
    ```bash
@@ -182,10 +192,12 @@ If another agent says it cannot compile because `moc` is unavailable, run this e
 wsl bash -lc "cd /mnt/e/Repos/haven-aol && icp build -e ic"
 ```
 
-If build succeeds, proceed to upgrade:
+If build succeeds, proceed to upgrade, warmups, and smoke tests:
 
 ```powershell
-wsl bash -lc "cd /mnt/e/Repos/haven-aol && icp canister install backend -e ic --mode upgrade --identity mainnet-validation-20260506"
+wsl bash -lc "cd /mnt/e/Repos/haven-aol && icp canister install backend -e ic --mode upgrade --identity mainnet-validation-20260506 --yes"
+wsl bash -lc "cd /mnt/e/Repos/haven-aol && printf 'y\n' | icp canister call backend warmupVetKDPublicKey '()' -e ic --identity mainnet-validation-20260506"
+wsl bash -lc "cd /mnt/e/Repos/haven-aol && printf 'y\n' | icp canister call backend warmupAttestationPublicKey '()' -e ic --identity mainnet-validation-20260506"
 wsl bash -lc "cd /mnt/e/Repos/haven-aol && ICP_MAINNET_IDENTITY=mainnet-validation-20260506 bash tests/mainnet-smoke.sh"
 ```
 
@@ -207,10 +219,38 @@ icp --version
 
 In this project, compile/deploy should be executed through `icp build` / `icp deploy` in WSL rather than trying to invoke `moc` directly from Windows.
 
-## 11) Quick Troubleshooting Notes
+## 11) Backend API (mainnet)
+
+Candid source of truth: `src/backend/backend.did`.
+
+| Endpoint | Type | Purpose |
+|----------|------|---------|
+| `requestDecryptionKey` | update | EIP-712 gate proof → balance check → VetKD encrypted key |
+| `getVetKDPublicKey` | query | VetKD verification key (requires `warmupVetKDPublicKey`) |
+| `warmupVetKDPublicKey` | update | Populate VetKD key cache |
+| `attestHolding` | update | EIP-712 holding proof → balance check → signed attestation |
+| `getAttestationPublicKey` | query | Ed25519 key for verifying attestations (requires `warmupAttestationPublicKey`) |
+| `warmupAttestationPublicKey` | update | Populate attestation key cache |
+| `health` | query | Liveness check |
+
+**Attestation flow:** Client signs an EIP-712 `AttestRequest`; canister verifies wallet + token balance, then signs a canonical `Attestation` blob with t-Schnorr (derivation path `haven_attest_v1`). Verifiers fetch `getAttestationPublicKey` and check the signature offline. See README for payload fields.
+
+## 12) Canister logs
+
+Controllers can fetch trap/debug output:
+
+```bash
+icp canister logs backend -e ic --identity mainnet-validation-20260506
+```
+
+Logs are sparse unless the canister traps or emits explicit debug output.
+
+## 13) Quick Troubleshooting Notes
 
 - **Motoko build fails on Windows:** run in WSL.
 - **PowerShell `&&` issues:** run commands separately or through `wsl bash -lc`.
 - **Identity keyring errors in WSL:** recreate identity with `--storage plaintext`.
 - **Insufficient cycles:** check `icp cycles balance`, then mint more cycles.
 - **Deployment uses wrong identity:** pass `--identity` explicitly in deploy/install commands.
+- **`getVetKDPublicKey` / `getAttestationPublicKey` trap:** run the matching warmup (see §9 step 4).
+- **Warmup hangs on prompt:** pass explicit args `'()'` and pipe `printf 'y\n'` if the CLI asks for confirmation.
