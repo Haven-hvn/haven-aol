@@ -61,11 +61,55 @@ type AttestResult = variant {
   err : GateError;
 };
 
+type BatchAttestRequest = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  cidHashes : vec text;
+  evmAddress : text;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+type BatchAttestResult = variant {
+  ok : record {
+    attestations : vec record { attestation : Attestation; signature : blob };
+  };
+  err : GateError;
+};
+
+type BatchGateRequest = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  cids : vec text;
+  evmAddress : text;
+  transportPublicKey : blob;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+type BatchKeyEntry = record {
+  cid : text;
+  encrypted_key : blob;
+};
+
+type BatchGateResult = variant {
+  ok : record { keys : vec BatchKeyEntry; verification_key : blob };
+  err : GateError;
+};
+
 service : {
   requestDecryptionKey : (GateRequest) -> (GateResult);
+  batchRequestDecryptionKey : (BatchGateRequest) -> (BatchGateResult);
   getVetKDPublicKey : () -> (blob) query;
   warmupVetKDPublicKey : () -> (blob);
   attestHolding : (AttestRequest) -> (AttestResult);
+  batchAttestHolding : (BatchAttestRequest) -> (BatchAttestResult);
   getAttestationPublicKey : () -> (blob) query;
   warmupAttestationPublicKey : () -> (blob);
   health : () -> (text) query;
