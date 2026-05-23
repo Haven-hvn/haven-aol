@@ -235,6 +235,10 @@ persistent actor {
   let EIP712_GATE_REQUEST_TYPEHASH_HEX : Text = "88160239aa0076952ec94d7cf6b6b51da1765acd803b051b6d06b3f27623f2c0";
   // keccak256("AttestRequest(address evmAddress,bytes32 cidHash,uint256 nonce)")
   let EIP712_ATTEST_REQUEST_TYPEHASH_HEX : Text = "7e4a5ca1db93a70b82733f9735aaa5682d44760b336ea437fea3715550a833b0";
+  // keccak256("BatchAttestRequest(address evmAddress,bytes32[] cidHashes,uint256 nonce)")
+  let EIP712_BATCH_ATTEST_REQUEST_TYPEHASH_HEX : Text = "e37ea33f0e5e580a4dab3a5e7caa5bef1579f999321b2ab9b1611f70c30902e1";
+  // keccak256("BatchGateRequest(address evmAddress,bytes32 transportKeyHash,bytes32 cidsCommitment,uint256 nonce)")
+  let EIP712_BATCH_GATE_REQUEST_TYPEHASH_HEX : Text = "b4633d97ed58755b24090d30395e8a391cb37f4e9c10d3478dc052697cf78394";
   // VetKD context — protocol v1 identifier (stable across Haven-AOL deployments).
   let VETKD_CONTEXT : Blob = Text.encodeUtf8("accessol_v1");
   let usedNonces = Map.empty<Text, Bool>();
@@ -603,6 +607,54 @@ persistent actor {
     keccak256(scopeBlob);
   };
 
+  // Nonce replay key scoped to batch attestation (separate from single attest nonces)
+  func batchAttestNonceReplayKey(domainSeparator : Blob) : Blob {
+    let scopeHex = blobToHex(domainSeparator) # EIP712_BATCH_ATTEST_REQUEST_TYPEHASH_HEX;
+    let ?scopeBlob = hexToBlob(scopeHex) else Runtime.trap("internal batch attest nonce scope hex encoding failure");
+    keccak256(scopeBlob);
+  };
+
+  // Nonce replay key scoped to batch gate (separate from gate/attest nonce namespaces)
+  func batchGateNonceReplayKey(domainSeparator : Blob) : Blob {
+    let scopeHex = blobToHex(domainSeparator) # EIP712_BATCH_GATE_REQUEST_TYPEHASH_HEX;
+    let ?scopeBlob = hexToBlob(scopeHex) else Runtime.trap("internal batch gate nonce scope hex encoding failure");
+    keccak256(scopeBlob);
+  };
+
+  // EIP-712 struct hash for BatchGateRequest(address evmAddress, bytes32 transportKeyHash, bytes32 cidsCommitment, uint256 nonce)
+  // cidsCommitment = keccak256(abi.encodePacked(derivationInput₁, derivationInput₂, ...))
+  func eip712BatchGateStructHash(evmAddress : Text, transportPublicKey : Blob, cids : [Text], chain : Chain, tokenAddress : Text, threshold : Nat, nonce : Nat) : ?Blob {
+    let ?address32 = encodeAddress32(evmAddress) else return null;
+    let transportKeyHash = blobToHex(keccak256(transportPublicKey));
+    // Build cidsCommitment: concatenate derivation inputs for each CID, then keccak256
+    var derivationInputsPacked = "";
+    for (cid in cids.vals()) {
+      let derivationInput = computeDerivationInput(chain, tokenAddress, threshold, cid);
+      derivationInputsPacked #= blobToHex(derivationInput);
+    };
+    let ?derivationInputsBlob = hexToBlob(derivationInputsPacked) else return null;
+    let cidsCommitment = blobToHex(keccak256(derivationInputsBlob));
+    let packedHex = EIP712_BATCH_GATE_REQUEST_TYPEHASH_HEX # address32 # transportKeyHash # cidsCommitment # encodeUint256(nonce);
+    let ?packedBlob = hexToBlob(packedHex) else return null;
+    ?keccak256(packedBlob);
+  };
+
+  // EIP-712 struct hash for BatchAttestRequest(address evmAddress, bytes32[] cidHashes, uint256 nonce)
+  // cidHashes encoded as keccak256(abi.encodePacked(cidHashes)) per EIP-712 array encoding
+  func eip712BatchAttestStructHash(evmAddress : Text, cidHashes : [Text], nonce : Nat) : ?Blob {
+    let ?address32 = encodeAddress32(evmAddress) else return null;
+    // Encode cidHashes array: concatenate each 32-byte element, then keccak256 the result
+    var cidHashesPacked = "";
+    for (cidHash in cidHashes.vals()) {
+      cidHashesPacked #= leftPad32(stripHexPrefix(cidHash));
+    };
+    let ?cidHashesPackedBlob = hexToBlob(cidHashesPacked) else return null;
+    let cidHashesHash = blobToHex(keccak256(cidHashesPackedBlob));
+    let packedHex = EIP712_BATCH_ATTEST_REQUEST_TYPEHASH_HEX # address32 # cidHashesHash # encodeUint256(nonce);
+    let ?packedBlob = hexToBlob(packedHex) else return null;
+    ?keccak256(packedBlob);
+  };
+
   // ── Attestation encoding (deterministic canonical format) ──────────
   // Format: "HAVEN_ATTEST_V1:{chain}:{tokenAddress}:{threshold}:{evmAddress}:{cidHash}:{timestamp}:{balanceAtCheck}"
   func encodeAttestation(a : Attestation) : Blob {
@@ -781,6 +833,31 @@ persistent actor {
     #err : GateError;
   };
 
+  // ── Public types for batch gate endpoint ────────────────────────────
+
+  public type BatchGateRequest = {
+    chain : Chain;
+    tokenAddress : Text;
+    threshold : Nat;
+    cids : [Text];
+    evmAddress : Text;
+    transportPublicKey : Blob;
+    nonce : Nat;
+    signature : Blob;
+    eip712ChainId : Nat;
+    eip712VerifyingContract : Text;
+  };
+
+  public type BatchKeyEntry = {
+    cid : Text;
+    encrypted_key : Blob;
+  };
+
+  public type BatchGateResult = {
+    #ok : { keys : [BatchKeyEntry]; verification_key : Blob };
+    #err : GateError;
+  };
+
   // ── Public types for attestation endpoint ──────────────────────────
 
   public type AttestRequest = {
@@ -920,6 +997,114 @@ persistent actor {
     };
   };
 
+  // ── Batch gate endpoint ────────────────────────────────────────────
+
+  /// Batch decryption key request: verify token holding once, derive N VetKD keys.
+  /// Steps: validate → EIP-712 batch signature verify → single balance check → N VetKD derivations.
+  /// Hard limit: 20 CIDs per call (ICP instruction budget constraint).
+  public func batchRequestDecryptionKey(req : BatchGateRequest) : async BatchGateResult {
+    // ── Step A: Input validation ──
+    if (req.cids.size() == 0 or req.cids.size() > 20) return #err(#InvalidThreshold);
+    switch (validateAddress(req.tokenAddress, "tokenAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.evmAddress, "evmAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.eip712VerifyingContract, "eip712VerifyingContract")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    if (req.threshold == 0) return #err(#InvalidThreshold);
+    for (cid in req.cids.vals()) {
+      if (cid.size() == 0) return #err(#InvalidAddress("cid must not be empty"));
+    };
+    if (Blob.toArray(req.transportPublicKey).size() == 0) return #err(#InvalidAddress("transportPublicKey must not be empty"));
+    if (Blob.toArray(req.signature).size() != 65) return #err(#InvalidSignature("signature must be 65 bytes [r||s||v]"));
+
+    // ── Step B: EIP-712 signature verification ──
+    let domainSeparator = switch (eip712DomainSeparator(APP_NAME, req.eip712ChainId, req.eip712VerifyingContract)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct domain separator")) };
+    };
+
+    // Nonce replay check (scoped to :batch_gate: namespace)
+    let nonceScopeKey = batchGateNonceReplayKey(domainSeparator);
+    let scopedNonce = blobToHex(nonceScopeKey) # ":batch_gate:" # Nat.toText(req.nonce);
+    if (Map.get(usedNonces, Text.compare, scopedNonce) != null) {
+      return #err(#NonceAlreadyUsed);
+    };
+    Map.add(usedNonces, Text.compare, scopedNonce, true);
+
+    let structHash = switch (eip712BatchGateStructHash(req.evmAddress, req.transportPublicKey, req.cids, req.chain, req.tokenAddress, req.threshold, req.nonce)) {
+      case (?h) { h };
+      case null { return #err(#InvalidSignature("failed to construct batch gate struct hash")) };
+    };
+    let digest = switch (eip712Digest(domainSeparator, structHash)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct digest")) };
+    };
+
+    // ecrecover
+    let signatureBytes = Blob.toArray(req.signature);
+    let rBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i]));
+    let sBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i + 32]));
+    let vByte = signatureBytes[64];
+    if (vByte != 27 and vByte != 28) return #err(#InvalidSignature("v must be 27 or 28"));
+
+    let recoveredAddressLower = switch (Secp256k1.ecrecover(digest, vByte, rBlob, sBlob, keccak256)) {
+      case (#ok(addressBlob)) { blobToHex(addressBlob) };
+      case (#err(msg)) { return #err(#InvalidSignature("ecrecover failed: " # msg)) };
+    };
+    let expectedAddressLower = toLowerHex(stripHexPrefix(req.evmAddress));
+    if (recoveredAddressLower != expectedAddressLower) return #err(#InvalidSignature("signature does not match evmAddress"));
+
+    // ── Step C: Single balance check ──
+    let balanceResult = await checkBalance(req.chain, req.tokenAddress, req.evmAddress);
+    let balance = switch (balanceResult) {
+      case (#ok(b)) { b };
+      case (#err(#InvalidAddress(msg))) { return #err(#InvalidAddress(msg)) };
+      case (#err(#EvmRpcError(msg))) { return #err(#EvmRpcError(msg)) };
+    };
+    if (balance < req.threshold) {
+      return #err(#InsufficientBalance({ required = req.threshold; actual = balance }));
+    };
+
+    // ── Step D: VetKD key derivation loop ──
+    let count = req.cids.size();
+    let keys = VarArray.tabulate<BatchKeyEntry>(count, func _ = { cid = ""; encrypted_key = Blob.fromArray([]) });
+
+    try {
+      var idx : Nat = 0;
+      for (cid in req.cids.vals()) {
+        let derivationInput = computeDerivationInput(req.chain, req.tokenAddress, req.threshold, cid);
+        let encryptedKey = await deriveKey(derivationInput, req.transportPublicKey);
+        keys[idx] := { cid = cid; encrypted_key = encryptedKey };
+        idx += 1;
+      };
+
+      // Bundle the verification key — read from memoized state (zero cost).
+      let verificationKey = switch (cachedVetKDPublicKey) {
+        case (?k) { k };
+        case null {
+          let resp = await vetkdCanister.vetkd_public_key({
+            canister_id = null;
+            context = VETKD_CONTEXT;
+            key_id = vetkdKeyId();
+          });
+          cachedVetKDPublicKey := ?resp.public_key;
+          resp.public_key;
+        };
+      };
+
+      #ok({ keys = VarArray.toArray(keys); verification_key = verificationKey });
+    } catch (e) {
+      #err(#VetKDError(Error.message(e)));
+    };
+  };
+
   // ── Attestation endpoints ──────────────────────────────────────────
 
   /// Returns the canister's t-Schnorr/Ed25519 attestation public key.
@@ -1036,6 +1221,135 @@ persistent actor {
       });
 
       #ok({ attestation = attestation; signature = signatureResult.signature });
+    } catch (e) {
+      #err(#VetKDError("t-Schnorr signing failed: " # Error.message(e)));
+    };
+  };
+
+  // ── Public types for batch attestation endpoint ──────────────────
+
+  public type BatchAttestRequest = {
+    chain : Chain;
+    tokenAddress : Text;
+    threshold : Nat;
+    cidHashes : [Text];
+    evmAddress : Text;
+    nonce : Nat;
+    signature : Blob;
+    eip712ChainId : Nat;
+    eip712VerifyingContract : Text;
+  };
+
+  public type BatchAttestResult = {
+    #ok : { attestations : [{ attestation : Attestation; signature : Blob }] };
+    #err : GateError;
+  };
+
+  /// Batch attestation: verify token holding once, produce N canister-signed attestations.
+  /// Steps: validate → EIP-712 batch signature verify → single balance check → N t-Schnorr signs.
+  /// Hard limit: 20 cidHashes per call (ICP instruction budget constraint).
+  public func batchAttestHolding(req : BatchAttestRequest) : async BatchAttestResult {
+    // ── Step A: Input validation ──
+    if (req.cidHashes.size() == 0 or req.cidHashes.size() > 20) return #err(#InvalidThreshold);
+    switch (validateAddress(req.tokenAddress, "tokenAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.evmAddress, "evmAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.eip712VerifyingContract, "eip712VerifyingContract")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    if (req.threshold == 0) return #err(#InvalidThreshold);
+    for (cidHash in req.cidHashes.vals()) {
+      if (cidHash.size() == 0) return #err(#InvalidAddress("cidHash must not be empty"));
+    };
+    if (Blob.toArray(req.signature).size() != 65) return #err(#InvalidSignature("signature must be 65 bytes"));
+
+    // ── Step B: EIP-712 signature verification ──
+    let domainSeparator = switch (eip712DomainSeparator(APP_NAME, req.eip712ChainId, req.eip712VerifyingContract)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct domain separator")) };
+    };
+
+    // Nonce replay check (scoped to :batch_attest: namespace)
+    let nonceScopeKey = batchAttestNonceReplayKey(domainSeparator);
+    let scopedNonce = blobToHex(nonceScopeKey) # ":batch_attest:" # Nat.toText(req.nonce);
+    if (Map.get(usedNonces, Text.compare, scopedNonce) != null) {
+      return #err(#NonceAlreadyUsed);
+    };
+    Map.add(usedNonces, Text.compare, scopedNonce, true);
+
+    let structHash = switch (eip712BatchAttestStructHash(req.evmAddress, req.cidHashes, req.nonce)) {
+      case (?h) { h };
+      case null { return #err(#InvalidSignature("failed to construct batch attest struct hash")) };
+    };
+    let digest = switch (eip712Digest(domainSeparator, structHash)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct digest")) };
+    };
+
+    // ecrecover
+    let signatureBytes = Blob.toArray(req.signature);
+    let rBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i]));
+    let sBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i + 32]));
+    let vByte = signatureBytes[64];
+    if (vByte != 27 and vByte != 28) return #err(#InvalidSignature("v must be 27 or 28"));
+
+    let recoveredAddressLower = switch (Secp256k1.ecrecover(digest, vByte, rBlob, sBlob, keccak256)) {
+      case (#ok(addressBlob)) { blobToHex(addressBlob) };
+      case (#err(msg)) { return #err(#InvalidSignature("ecrecover failed: " # msg)) };
+    };
+    let expectedAddressLower = toLowerHex(stripHexPrefix(req.evmAddress));
+    if (recoveredAddressLower != expectedAddressLower) return #err(#InvalidSignature("signature does not match evmAddress"));
+
+    // ── Step C: Single balance check ──
+    let balanceResult = await checkBalance(req.chain, req.tokenAddress, req.evmAddress);
+    let balance = switch (balanceResult) {
+      case (#ok(b)) { b };
+      case (#err(#InvalidAddress(msg))) { return #err(#InvalidAddress(msg)) };
+      case (#err(#EvmRpcError(msg))) { return #err(#EvmRpcError(msg)) };
+    };
+    if (balance < req.threshold) {
+      return #err(#InsufficientBalance({ required = req.threshold; actual = balance }));
+    };
+
+    // ── Step D: Build attestations and sign each ──
+    let timestamp = Int.abs(Time.now() / 1_000_000_000);
+    let count = req.cidHashes.size();
+    let attestations = VarArray.tabulate<{ attestation : Attestation; signature : Blob }>(count, func _ = {
+      attestation = {
+        evmAddress = ""; chain = #EthMainnet; tokenAddress = ""; threshold = 0;
+        balanceAtCheck = 0; cidHash = ""; timestamp = 0;
+      };
+      signature = Blob.fromArray([]);
+    });
+
+    try {
+      var idx : Nat = 0;
+      for (cidHash in req.cidHashes.vals()) {
+        let attestation : Attestation = {
+          evmAddress = req.evmAddress;
+          chain = req.chain;
+          tokenAddress = req.tokenAddress;
+          threshold = req.threshold;
+          balanceAtCheck = balance;
+          cidHash = cidHash;
+          timestamp = timestamp;
+        };
+        let attestationBytes = encodeAttestation(attestation);
+        let signatureResult = await (with cycles = SCHNORR_CYCLE_BUDGET) ic.sign_with_schnorr({
+          message = attestationBytes;
+          derivation_path = [Text.encodeUtf8("haven_attest_v1")];
+          key_id = schnorrKeyId();
+        });
+        attestations[idx] := { attestation = attestation; signature = signatureResult.signature };
+        idx += 1;
+      };
+      #ok({ attestations = VarArray.toArray(attestations) });
     } catch (e) {
       #err(#VetKDError("t-Schnorr signing failed: " # Error.message(e)));
     };

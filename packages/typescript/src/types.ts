@@ -67,6 +67,48 @@ export interface DecryptOptions {
   fetchRootKey?: boolean;
 }
 
+/** Candid-compatible batch gate request. */
+export interface BatchGateRequest {
+  chain: { [K in Chain]?: null };
+  tokenAddress: string;
+  threshold: bigint;
+  cids: string[]; // max 20
+  evmAddress: string;
+  transportPublicKey: Uint8Array;
+  nonce: bigint;
+  signature: Uint8Array;
+  eip712ChainId: bigint;
+  eip712VerifyingContract: string;
+}
+
+export interface BatchKeyEntry {
+  cid: string;
+  encryptedKey: Uint8Array;
+}
+
+export type BatchGateResult =
+  | { ok: { keys: BatchKeyEntry[]; verificationKey: Uint8Array } }
+  | { err: GateError };
+
+export interface BatchGateRequestTypedData {
+  domain: {
+    name: "HavenAOL";
+    chainId: bigint;
+    verifyingContract: string;
+  };
+  primaryType: "BatchGateRequest";
+  types: {
+    EIP712Domain: Array<{ name: string; type: string }>;
+    BatchGateRequest: Array<{ name: string; type: string }>;
+  };
+  message: {
+    evmAddress: string;
+    transportKeyHash: `0x${string}`;
+    cidsCommitment: `0x${string}`;
+    nonce: bigint;
+  };
+}
+
 export interface GateRequestTypedData {
   domain: {
     name: "HavenAOL";

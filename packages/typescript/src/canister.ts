@@ -5,7 +5,7 @@ import {
   type ActorSubclass,
 } from "@icp-sdk/core/agent";
 import { IDL } from "@icp-sdk/core/candid";
-import { Chain, GateResult, type GateRequest } from "./types.js";
+import { Chain, GateResult, BatchGateResult, type GateRequest } from "./types.js";
 
 /** Candid wire shape returned by `requestDecryptionKey`. */
 interface RawGateResultOk {
@@ -15,8 +15,22 @@ interface RawGateResultOk {
 
 type RawGateResult = { ok: RawGateResultOk } | { err: unknown };
 
+/** Candid wire shape returned by `batchRequestDecryptionKey`. */
+interface RawBatchKeyEntry {
+  cid: string;
+  encrypted_key: Uint8Array | number[];
+}
+
+interface RawBatchGateResultOk {
+  keys: RawBatchKeyEntry[];
+  verification_key: Uint8Array | number[];
+}
+
+type RawBatchGateResult = { ok: RawBatchGateResultOk } | { err: unknown };
+
 interface HavenAolCanisterActor {
   requestDecryptionKey: ActorMethod<[GateRequest], RawGateResult>;
+  batchRequestDecryptionKey: ActorMethod<[unknown], RawBatchGateResult>;
   getVetKDPublicKey: ActorMethod<[], Uint8Array | number[]>;
   getAttestationPublicKey: ActorMethod<[], Uint8Array | number[]>;
 }
@@ -61,9 +75,36 @@ const GateResultVariant = IDL.Variant({
   err: GateErrorVariant,
 });
 
+const BatchGateRequestType = IDL.Record({
+  chain: ChainVariant,
+  tokenAddress: IDL.Text,
+  threshold: IDL.Nat,
+  cids: IDL.Vec(IDL.Text),
+  evmAddress: IDL.Text,
+  transportPublicKey: IDL.Vec(IDL.Nat8),
+  nonce: IDL.Nat,
+  signature: IDL.Vec(IDL.Nat8),
+  eip712ChainId: IDL.Nat,
+  eip712VerifyingContract: IDL.Text,
+});
+
+const BatchKeyEntryType = IDL.Record({
+  cid: IDL.Text,
+  encrypted_key: IDL.Vec(IDL.Nat8),
+});
+
+const BatchGateResultVariant = IDL.Variant({
+  ok: IDL.Record({
+    keys: IDL.Vec(BatchKeyEntryType),
+    verification_key: IDL.Vec(IDL.Nat8),
+  }),
+  err: GateErrorVariant,
+});
+
 const idlFactory = () =>
   IDL.Service({
     requestDecryptionKey: IDL.Func([GateRequestType], [GateResultVariant], []),
+    batchRequestDecryptionKey: IDL.Func([BatchGateRequestType], [BatchGateResultVariant], []),
     getVetKDPublicKey: IDL.Func([], [IDL.Vec(IDL.Nat8)], ["query"]),
     getAttestationPublicKey: IDL.Func([], [IDL.Vec(IDL.Nat8)], ["query"]),
   });
@@ -154,6 +195,56 @@ export async function requestDecryptionKey(
     };
   }
   return { err: raw.err } as GateResult;
+}
+
+/**
+ * Call the canister's batchRequestDecryptionKey endpoint.
+ *
+ * Returns encrypted derived keys for multiple CIDs in one call,
+ * plus the shared verification key.
+ */
+export async function batchRequestDecryptionKey(
+  agent: HttpAgent,
+  canisterId: string,
+  request: {
+    chain: Chain;
+    tokenAddress: string;
+    threshold: bigint;
+    cids: string[];
+    evmAddress: string;
+    transportPublicKey: Uint8Array;
+    nonce: bigint;
+    signature: Uint8Array;
+    eip712ChainId: bigint;
+    eip712VerifyingContract: string;
+  },
+): Promise<BatchGateResult> {
+  const actor = getOrCreateActor(agent, canisterId);
+  const raw = await actor.batchRequestDecryptionKey({
+    chain: buildChainVariant(request.chain),
+    tokenAddress: request.tokenAddress,
+    threshold: request.threshold,
+    cids: request.cids,
+    evmAddress: request.evmAddress,
+    transportPublicKey: request.transportPublicKey,
+    nonce: request.nonce,
+    signature: request.signature,
+    eip712ChainId: request.eip712ChainId,
+    eip712VerifyingContract: request.eip712VerifyingContract,
+  });
+
+  if ("ok" in raw) {
+    return {
+      ok: {
+        keys: raw.ok.keys.map((entry) => ({
+          cid: entry.cid,
+          encryptedKey: new Uint8Array(entry.encrypted_key),
+        })),
+        verificationKey: new Uint8Array(raw.ok.verification_key),
+      },
+    };
+  }
+  return { err: raw.err } as BatchGateResult;
 }
 
 /**
