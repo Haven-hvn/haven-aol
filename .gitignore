@@ -1,0 +1,17 @@
+.venv-wsl/
+.venv/
+.venv-probe/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+node_modules/
+dist/
+
+target/
+*.egg-info/
+
+.mops/
+.icp/cache/
+.icp/networks/

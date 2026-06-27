@@ -1,0 +1,26 @@
+[project]
+name = "haven-aol"
+version = "0.1.0"
+description = "Haven-AOL (Always Online): upload-side encryption for conditional token-gated access on DFINITY ICP — DAOs, DataDAOs, agent swarms, and shared web3 resources"
+requires-python = ">=3.10"
+dependencies = [
+    "haven-aol-vetkeys>=0.1.0",
+    "cryptography>=41.0",
+    # Internet Computer principal parsing; install from PyPI only (not the ./icp-py-core reference tree).
+    "icp-py-core>=2.3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

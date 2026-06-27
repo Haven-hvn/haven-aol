@@ -1,0 +1,190 @@
+type Chain = variant {
+  EthMainnet;
+  EthSepolia;
+  ArbitrumOne;
+  BaseMainnet;
+  OptimismMainnet;
+};
+
+type GateRequest = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  cid : text;
+  evmAddress : text;
+  transportPublicKey : blob;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+type GateError = variant {
+  InsufficientBalance : record { required : nat; actual : nat };
+  InvalidAddress : text;
+  InvalidThreshold;
+  EvmRpcError : text;
+  VetKDError : text;
+  InvalidSignature : text;
+  NonceAlreadyUsed;
+  InvalidEpoch;
+};
+
+type GateResult = variant {
+  ok : record { encrypted_key : blob; verification_key : blob };
+  err : GateError;
+};
+
+type AttestRequest = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  cidHash : text;
+  evmAddress : text;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+type Attestation = record {
+  evmAddress : text;
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  balanceAtCheck : nat;
+  cidHash : text;
+  timestamp : nat;
+};
+
+type AttestResult = variant {
+  ok : record { attestation : Attestation; signature : blob };
+  err : GateError;
+};
+
+type MerkleAttestRequest = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  cidHashes : vec text;
+  evmAddress : text;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+type MerkleSide = variant { left; right };
+
+type MerkleProofEntry = record {
+  side : MerkleSide;
+  hash : blob;
+};
+
+type MerkleAttestLeaf = record {
+  cidHash : text;
+  merkleProof : vec MerkleProofEntry;
+};
+
+type MerkleAttestation = record {
+  evmAddress : text;
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  balanceAtCheck : nat;
+  timestamp : nat;
+  cidCount : nat;
+  merkleRoot : blob;
+  leaves : vec MerkleAttestLeaf;
+  rootSignature : blob;
+};
+
+type MerkleAttestResult = variant {
+  ok : MerkleAttestation;
+  err : GateError;
+};
+
+type BatchGateRequest = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  cids : vec text;
+  evmAddress : text;
+  transportPublicKey : blob;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+type BatchKeyEntry = record {
+  cid : text;
+  encrypted_key : blob;
+};
+
+type BatchGateResult = variant {
+  ok : record { keys : vec BatchKeyEntry; verification_key : blob };
+  err : GateError;
+};
+
+// ── Protocol v3 (corpus + epoch) types ─────────────────────────────
+// v3 keys VetKD by (chain, tokenAddress, threshold, epoch) instead of
+// (chain, tokenAddress, threshold, cid). One VetKey now unlocks every
+// CID a community uploaded in a given 30-day epoch. See
+// docs/derivation-spec.md §"Protocol v3 — Corpus + Epoch Derivation".
+
+type GateRequestV3 = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  epoch : nat;
+  evmAddress : text;
+  transportPublicKey : blob;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+// A v3 batch request carries a single epoch (the whole point of v3:
+// one VetKey unlocks every CID in this (community, epoch) bucket).
+// The `cids : vec text` field shapes the response only; it does NOT
+// participate in derivation.
+type BatchGateRequestV3 = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  epoch : nat;
+  cids : vec text;
+  evmAddress : text;
+  transportPublicKey : blob;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
+service : {
+  requestDecryptionKey : (GateRequest) -> (GateResult);
+  batchRequestDecryptionKey : (BatchGateRequest) -> (BatchGateResult);
+  getVetKDPublicKey : () -> (blob) query;
+  warmupVetKDPublicKey : () -> (blob);
+  // Protocol v3 verification-key surface. Distinct from the v1 pair
+  // because v1 and v3 derive under different VetKD contexts and
+  // therefore have distinct master public keys (Sprint 1 · Task 04).
+  getVetKDPublicKeyV3 : () -> (blob) query;
+  warmupVetKDPublicKeyV3 : () -> (blob);
+  attestHolding : (AttestRequest) -> (AttestResult);
+  batchAttestHolding : (MerkleAttestRequest) -> (MerkleAttestResult);
+  getAttestationPublicKey : () -> (blob) query;
+  warmupAttestationPublicKey : () -> (blob);
+  health : () -> (text) query;
+  // ── Protocol v3 endpoints ──
+  requestDecryptionKeyV3 : (GateRequestV3) -> (GateResult);
+  batchRequestDecryptionKeyV3 : (BatchGateRequestV3) -> (BatchGateResult);
+  getCurrentEpoch : () -> (nat) query;
+  // Controller-only janitor (Sprint 1 · Task 02). Operator cron calls in
+  // a loop until it returns 0. Non-controllers cause a trap.
+  evictExpiredApprovals : (nat) -> (nat);
+
+}

@@ -1,0 +1,24 @@
+{
+  "name": "haven-aol",
+  "version": "0.1.0",
+  "description": "Haven-AOL (Always Online): decrypt-side library for conditional token-gated access on DFINITY ICP — smart access management for web3, DAOs, DataDAOs, and agent swarms",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@icp-sdk/core": "^5.4.0",
+    "@dfinity/vetkeys": "0.4.0",
+    "ethers": "^6.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

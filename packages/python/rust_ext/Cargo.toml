@@ -1,0 +1,14 @@
+[package]
+name = "haven_aol_vetkeys"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "haven_aol_vetkeys"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+ic-vetkeys = "0.7"
+ic-management-canister-types = "0.7"
+rand = "0.8"

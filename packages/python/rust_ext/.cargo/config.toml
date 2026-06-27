@@ -1,0 +1,4 @@
+# PyO3 build-config rejects CPython newer than its supported list until PyO3 catches up.
+# Forward-compat uses the stable ABI when the interpreter is ahead (e.g. CPython 3.14).
+[env]
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY = "1"

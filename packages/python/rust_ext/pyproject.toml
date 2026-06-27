@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "haven-aol-vetkeys"
+version = "0.1.0"
+description = "Native VetKD helpers for Haven-AOL (PyO3 extension)."
+requires-python = ">=3.10"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

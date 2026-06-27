@@ -1,0 +1,86 @@
+{
+  "version": 3,
+  "constants": {
+    "epochLengthSeconds": 2592000,
+    "domainTag": "accessol_v3:",
+    "vetkdContext": "accessol_v3",
+    "eip712TypeString": "GateRequestV3(address evmAddress,bytes transportPublicKey,uint256 epoch,uint256 nonce)",
+    "eip712TypehashHex": "bf3ae9382ccda27b087c12bfb5fd82fa7ccc60857623462a4c7fec696bc7d7af"
+  },
+  "vectors": [
+    {
+      "name": "standard-eth-mainnet-threshold-one-epoch-670",
+      "kind": "positive",
+      "input": {
+        "chain": "EthMainnet",
+        "tokenAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "threshold": 1,
+        "epoch": 670
+      },
+      "expected": {
+        "preimageUtf8": "accessol_v3:EthMainnet:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48:1:670",
+        "preimageHex": "6163636573736f6c5f76333a4574684d61696e6e65743a3078413062383639393163363231386233366331643139443461326539456230634533363036654234383a313a363730",
+        "derivationInputHex": "284079086e763ae6490c10a85ebd00f3b2f44369fef7d9798964ca4e0760860d"
+      }
+    },
+    {
+      "name": "base-mainnet-threshold-five-epoch-671",
+      "kind": "positive",
+      "input": {
+        "chain": "BaseMainnet",
+        "tokenAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "threshold": 5,
+        "epoch": 671
+      },
+      "expected": {
+        "preimageUtf8": "accessol_v3:BaseMainnet:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913:5:671",
+        "preimageHex": "6163636573736f6c5f76333a426173654d61696e6e65743a3078383333353839664344366544623645303866346337433332443466373162353462644130323931333a353a363731",
+        "derivationInputHex": "4755398ba6367830fc5db4a7974c2010091d56b5a48a4f86aff6ea23f079a7af"
+      }
+    },
+    {
+      "name": "threshold-zero-canonical",
+      "kind": "positive",
+      "input": {
+        "chain": "EthMainnet",
+        "tokenAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "threshold": 0,
+        "epoch": 0
+      },
+      "expected": {
+        "preimageUtf8": "accessol_v3:EthMainnet:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48:0:0",
+        "preimageHex": "6163636573736f6c5f76333a4574684d61696e6e65743a3078413062383639393163363231386233366331643139443461326539456230634533363036654234383a303a30",
+        "derivationInputHex": "4e88a1834a21897e1a596ce9007bce59d5c49cb32078bcc12265508577bbad61"
+      }
+    },
+    {
+      "name": "threshold-zero-collapse-epoch-670",
+      "kind": "threshold-zero-collapse",
+      "input": {
+        "chain": "EthMainnet",
+        "tokenAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "threshold": 0,
+        "epoch": 670
+      },
+      "effectiveEpoch": 0,
+      "expected": {
+        "preimageUtf8": "accessol_v3:EthMainnet:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48:0:0",
+        "preimageHex": "6163636573736f6c5f76333a4574684d61696e6e65743a3078413062383639393163363231386233366331643139443461326539456230634533363036654234383a303a30",
+        "derivationInputHex": "4e88a1834a21897e1a596ce9007bce59d5c49cb32078bcc12265508577bbad61"
+      }
+    },
+    {
+      "name": "future-epoch-rejected",
+      "kind": "negative-future-epoch",
+      "input": {
+        "chain": "EthMainnet",
+        "tokenAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "threshold": 1,
+        "epoch": 9999999999
+      },
+      "expected": {
+        "expectedError": "InvalidEpoch"
+      }
+    }
+  ]
+}

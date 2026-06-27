@@ -1,0 +1,16 @@
+{
+  "status": "err",
+  "canisterId": "dciac-uaaaa-aaaad-qlzuq-cai",
+  "error": {
+    "InsufficientBalance": {
+      "required": 1,
+      "actual": 0
+    }
+  },
+  "_meta": {
+    "source": "mainnet_attest_cost_probe.py",
+    "path": "ecrecover + eth_call only; sign_with_schnorr not reached",
+    "cyclesConsumedByBackend": 3031202874,
+    "wallClockSeconds": 7.774
+  }
+}

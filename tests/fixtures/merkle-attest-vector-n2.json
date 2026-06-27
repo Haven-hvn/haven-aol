@@ -1,0 +1,48 @@
+{
+  "name": "merkle-attest-vector-n2",
+  "input": {
+    "chain": "EthMainnet",
+    "tokenAddress": "0x6982508145454ce325ddbe47a25d4ec3d2311933",
+    "threshold": 1000000000000000000,
+    "evmAddress": "0x742d35cc6634c0532925a3b844bc9e7595f0beb1",
+    "cidHashes_submissionOrder": [
+      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ]
+  },
+  "expected": {
+    "timestamp": 1700000000,
+    "balanceAtCheck": 5000000000000000000,
+    "cidCount": 2,
+    "merkleRoot": "2ec3d450a01d34c0633f7f3bc01b9da5f1e69f379510f94c2383aa7a5e1055a9",
+    "batchPreimage_utf8": "HAVEN_BATCH_ATTEST_V1:EthMainnet:0x6982508145454ce325ddbe47a25d4ec3d2311933:1000000000000000000:0x742d35cc6634c0532925a3b844bc9e7595f0beb1:2ec3d450a01d34c0633f7f3bc01b9da5f1e69f379510f94c2383aa7a5e1055a9:2:1700000000:5000000000000000000",
+    "leaves_submissionOrder": [
+      {
+        "cidHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "merkleProof": [
+          {
+            "side": "left",
+            "hash": "474d72cd81bddf342d6b31929b8b51179819223018a4f1b7f161276acefb9290"
+          }
+        ]
+      },
+      {
+        "cidHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "merkleProof": [
+          {
+            "side": "right",
+            "hash": "49873f1d9626484e91952f1e7986f1e87fa0c14fa0d7f13367508f07bdf48715"
+          }
+        ]
+      }
+    ],
+    "padLimit": 2,
+    "zeroLeaf": "c0f127327ba544b7956b5ea3fc0b30e16a73c4254f3a7c34b4f9c258c452e665"
+  },
+  "constants": {
+    "LEAF_PREFIX": "0x00",
+    "NODE_PREFIX": "0x01",
+    "leafPreimageFormat": "HAVEN_ATTEST_V1:{chain}:{tokenAddress}:{threshold}:{evmAddress}:{cidHash}:{timestamp}:{balanceAtCheck}",
+    "batchPreimageFormat": "HAVEN_BATCH_ATTEST_V1:{chain}:{tokenAddress}:{threshold}:{evmAddress}:{merkleRootHex}:{cidCount}:{timestamp}:{balanceAtCheck}"
+  }
+}
