@@ -4,7 +4,7 @@ import {
   DerivedPublicKey,
   IbeCiphertext,
   VetKey,
-} from "@dfinity/vetkeys";
+} from "@icp-sdk/vetkeys";
 
 /** Generate an ephemeral transport key pair for VetKD. */
 export function createTransportKeyPair(): {
