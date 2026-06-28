@@ -1,6 +1,6 @@
 # Haven-AOL Integration Tests
 
-## Test Cases
+## Test Cases — v1 Protocol
 
 | ID | Name | Requires Replica | Requires IPFS |
 |----|------|-----------------|---------------|
@@ -11,6 +11,49 @@
 | TC-5 | IBE cross-language compatibility | No | No |
 | TC-6 | AES cross-language compatibility | No | No |
 | TC-7 | Multi-chain derivation hash divergence | No | No |
+
+## Test Cases — v3 Protocol
+
+### Cross-stack derivation parity
+
+All three implementations (Motoko canister, Python SDK, TypeScript SDK) must produce byte-identical derivation inputs. The shared fixture [`tests/fixtures/derivation-v3-vectors.json`](fixtures/derivation-v3-vectors.json) pins 5 positive vectors that every implementation must match.
+
+### Python v3 test suite
+
+File: [`packages/python/tests/test_haven_aol_v3.py`](../packages/python/tests/test_haven_aol_v3.py) (567 lines)
+
+Covers:
+- Fixture-driven parity against `derivation-v3-vectors.json` for every positive vector
+- Threshold-zero `ValueError` in `build_gate_metadata_v3` (threshold=0 with epoch≠0 must raise)
+- v1 dispatch through `parse_gate_metadata` is byte-stable (v1 records pass through unchanged)
+- EIP-712 typed-data shape and primary-type field order
+- v3 metadata schema parity (version is integer 3; epoch is JSON integer; threshold is decimal string)
+- No new imports beyond stdlib + existing dependencies
+
+Run:
+```bash
+pip install -e "packages/python[dev]"
+python -m pytest packages/python/tests/test_haven_aol_v3.py -v
+```
+
+### TypeScript v3 test suite
+
+File: [`packages/typescript/src/test/v3.test.ts`](../packages/typescript/src/test/v3.test.ts) (551 lines)
+
+Twin of the Python v3 test suite. Covers:
+- Fixture parity: every positive vector in `derivation-v3-vectors.json` hashes to the pinned digest
+- Constant parity: epoch length, type string, typehash, version
+- Build/serialize/parse round-trips with canonical field order
+- Threshold-zero / nonzero-epoch invariant (canister §v3.4)
+- Dispatcher: v1 records pass through unchanged; v3 records narrow correctly; unknown/garbage records return null
+- EIP-712 typed-data shape exact (`GateRequestV3` field order, no `version` field on the domain)
+
+Run:
+```bash
+cd packages/typescript && npm install && npm run build && npm test
+```
+
+---
 
 ## Running Tests
 
@@ -31,7 +74,7 @@ cd tests
 ./run-tests.sh --offline
 ```
 
-### All tests (requires local replica)
+### All v1 tests (requires local replica)
 
 ```bash
 # Prerequisites
@@ -49,6 +92,19 @@ cd tests
 # Cleanup
 icp network stop
 ```
+
+### v3 tests only (no replica needed)
+
+```bash
+# Python
+pip install -e "packages/python[dev]"
+python -m pytest packages/python/tests/test_haven_aol_v3.py -v
+
+# TypeScript
+cd packages/typescript && npm install && npm run build && npm test
+```
+
+---
 
 ## Balance Simulation Approach
 
@@ -75,4 +131,4 @@ python3 -m venv .venv-probe && .venv-probe/bin/pip install icp-py-core eth-accou
 .venv-probe/bin/python -m pytest tests/mainnet_attest_probe.py -v
 ```
 
-`tests/mainnet_attest_probe.py` mirrors haven-cli’s `attestHolding` path. A valid EIP-712 proof with an unfunded wallet should return `#err InsufficientBalance`, not replica reject `IC0406`.
+`tests/mainnet_attest_probe.py` mirrors haven-cli's `attestHolding` path. A valid EIP-712 proof with an unfunded wallet should return `#err InsufficientBalance`, not replica reject `IC0406`.
