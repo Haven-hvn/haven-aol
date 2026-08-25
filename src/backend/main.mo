@@ -248,6 +248,13 @@ persistent actor {
   // VetKD context — protocol v3 (corpus + epoch). Distinct from v1 so a
   // single transport key under different protocols cannot be confused.
   let VETKD_CONTEXT_V3 : Blob = Text.encodeUtf8("accessol_v3");
+  // VetKD context — protocol v4 (corpus + epoch + marketCapTarget).
+  // Partitioned from v1/v3 so a drip key can never be confused with a
+  // time-gated or per-CID key even for identical gate tuples.
+  let VETKD_CONTEXT_V4 : Blob = Text.encodeUtf8("accessol_v4");
+  // keccak256("GateRequestV4(address evmAddress,bytes transportPublicKey,uint256 epoch,uint256 marketCapTarget,uint256 nonce)")
+  // Pinned in tests/fixtures/derivation-v4-vectors.json (`constants.eip712TypehashHex`).
+  let EIP712_GATE_REQUEST_V4_TYPEHASH_HEX : Text = "b9d5f143468a4d6e11bd1d2ff3eb546445b99a1e871adde2cd2c6008e2980afd";
   // 30-day epoch cadence (seconds). Pinned in docs/derivation-spec.md and
   // tests/fixtures/derivation-v3-vectors.json (`constants.epochLengthSeconds`).
   let EPOCH_LENGTH_SECONDS : Nat = 2_592_000;
@@ -256,6 +263,23 @@ persistent actor {
   // two concepts can drift in future protocol revisions (e.g. a future
   // epoch redefinition must not silently lengthen cached approvals).
   let APPROVAL_TTL_SECONDS : Nat = EPOCH_LENGTH_SECONDS;
+  // ── Market-cap cache policy (Protocol v4) ──────────────────────────
+  // Short burst-absorption TTL, deliberately NOT the 30-day epoch used by
+  // the approval cache: crypto markets reprice continuously and a stale
+  // cap would make unlock decisions meaningless (an entry could read
+  // "unlocked" for weeks after a crash). Five minutes bounds worst-case
+  // staleness well inside typical Chainlink USD-feed heartbeat cadence
+  // while still deduplicating bursts of readers hitting the same drip.
+  let MARKET_CAP_CACHE_TTL_SECONDS : Nat = 300;
+  // Chainlink USD aggregators quote with 8 decimals (USD/ETH, …).
+  // Market caps are computed and cached in this fixed scale:
+  //   capUsd8 = totalSupplyRaw * priceAnswer / 10^tokenDecimals
+  // so comparing against `marketCapTarget` (whole USD) is done as
+  //   capUsd8 >= marketCapTarget * 10^8.
+  let ORACLE_PRICE_DECIMALS : Nat = 8;
+  // Reject oracle answers whose updatedAt is older than this — a dead or
+  // abandoned feed must fail closed instead of serving ancient prices.
+  let MAX_ORACLE_STALENESS_SECONDS : Int = 86_400;
   let usedNonces = Map.empty<Text, Bool>();
   // ── Approval cache (Protocol v3 only) ──────────────────────────────
   // Key:   text join `chain|tokenAddress_lower|threshold|epoch|evmAddress_lower`
@@ -274,6 +298,36 @@ persistent actor {
   // v1 endpoints DO NOT touch this map — v1 has per-CID semantics and
   // its callers expect a balance check on every request.
   let approvedHolders = Map.empty<Text, Nat>();
+
+  // ── Market-cap caches (Protocol v4 only) ───────────────────────────
+  // Crypto markets move continuously, so a long-lived cap snapshot would
+  // make unlock decisions meaningless — a cap cached for a full 30-day
+  // epoch could show "unlocked" for weeks after a crash (or lock out
+  // holders after a pump until the next epoch). The cache therefore
+  // exists ONLY to absorb read bursts:
+  //
+  //   marketCapCache : chain|token_lower -> { capUsd8, fetchedAt }
+  //     TTL = MARKET_CAP_CACHE_TTL_SECONDS (300s). Worst-case staleness
+  //     is bounded to five minutes — well inside typical Chainlink USD
+  //     feed heartbeat cadence. On expiry the next request refetches
+  //     price + totalSupply; a failed refresh does NOT extend the old
+  //     entry's life.
+  //
+  //   tokenDecimalsCache : chain|token_lower -> Nat
+  //     Permanent. ERC20 `decimals()` is immutable per deployed contract,
+  //     so this is the only value that is safe to cache indefinitely and
+  //     it removes one eth_call from every refresh after the first.
+  //
+  // Both maps live only inside the actor heap (persistent actor ⇒ whole
+  // heap survives upgrades), matching the `approvedHolders` lifecycle.
+  type MarketCapCacheEntry = {
+    // Live USD market cap scaled by 10^8 (oracle price decimals).
+    capUsd8 : Nat;
+    // UNIX seconds when this snapshot was fetched from the oracle+chain.
+    fetchedAt : Int;
+  };
+  let marketCapCache = Map.empty<Text, MarketCapCacheEntry>();
+  let tokenDecimalsCache = Map.empty<Text, Nat>();
 
 
   // ── EVM RPC canister reference ─────────────────────────────────────
@@ -313,6 +367,7 @@ persistent actor {
   // both survive canister upgrades.
   var cachedVetKDPublicKey : ?Blob = null;    // v1, accessol_v1
   var cachedVetKDPublicKeyV3 : ?Blob = null;  // v3, accessol_v3
+  var cachedVetKDPublicKeyV4 : ?Blob = null;  // v4, accessol_v4
 
   func vetkdKeyId() : VetKdKeyId {
     { curve = #bls12_381_g2; name = vetkdKeyName };
@@ -703,6 +758,46 @@ persistent actor {
     keccak256(scopeBlob);
   };
 
+  // ── Protocol v4 EIP-712 helpers ────────────────────────────────────
+  //
+  // v4 requests are signed against
+  //   GateRequestV4(address evmAddress,bytes transportPublicKey,
+  //                 uint256 epoch,uint256 marketCapTarget,uint256 nonce)
+  // so the signed message commits to the exact unlock target being
+  // requested — a reader cannot sign once at T0 and later claim a
+  // higher-unlocked chunk under the same signature.
+
+  // EIP-712 struct hash for the v4 GateRequest type. bytes-typed
+  // transportPublicKey is hashed (per EIP-712 dynamic-bytes rules).
+  func eip712GateStructHashV4(
+    evmAddress : Text,
+    transportPublicKey : Blob,
+    epoch : Nat,
+    marketCapTarget : Nat,
+    nonce : Nat,
+  ) : ?Blob {
+    let ?address32 = encodeAddress32(evmAddress) else return null;
+    let transportHashHex = blobToHex(keccak256(transportPublicKey));
+    let packedHex =
+      EIP712_GATE_REQUEST_V4_TYPEHASH_HEX
+      # address32
+      # transportHashHex
+      # encodeUint256(epoch)
+      # encodeUint256(marketCapTarget)
+      # encodeUint256(nonce);
+    let ?packedBlob = hexToBlob(packedHex) else return null;
+    ?keccak256(packedBlob);
+  };
+
+  // Nonce replay key scoped to protocol v4 gate requests. Distinct from
+  // v1/v3 scopes so the same wire nonce cannot be replayed across
+  // protocol versions.
+  func gateV4NonceReplayKey(domainSeparator : Blob) : Blob {
+    let scopeHex = blobToHex(domainSeparator) # EIP712_GATE_REQUEST_V4_TYPEHASH_HEX;
+    let ?scopeBlob = hexToBlob(scopeHex) else Runtime.trap("internal v4 nonce scope hex encoding failure");
+    keccak256(scopeBlob);
+  };
+
   // EIP-712 struct hash for BatchGateRequest(address evmAddress, bytes32 transportKeyHash, bytes32 cidsCommitment, uint256 nonce)
   // cidsCommitment = keccak256(abi.encodePacked(derivationInput₁, derivationInput₂, ...))
   func eip712BatchGateStructHash(evmAddress : Text, transportPublicKey : Blob, cids : [Text], chain : Chain, tokenAddress : Text, threshold : Nat, nonce : Nat) : ?Blob {
@@ -804,6 +899,36 @@ persistent actor {
     Sha256.fromBlob(#sha256, Text.encodeUtf8(preimage));
   };
 
+  // ── Derivation input hash (Protocol v4) ────────────────────────────
+  // Per docs/derivation-spec.md §"Protocol v4 — MarketCap-Gated Drip":
+  //   effectiveEpoch = if (threshold == 0) 0 else epoch        // collapse rule
+  //   preimage = "accessol_v4:" + chain + ":" + tokenAddress + ":"
+  //              + str(threshold) + ":" + str(effectiveEpoch) + ":"
+  //              + str(marketCapTarget)
+  //   derivation_input = SHA-256(UTF-8(preimage))
+  //
+  // The marketCapTarget is part of the identity: two chunks of the same
+  // drip with different unlock targets derive different keys even if a
+  // publisher ever reused a CID. Byte-identity vectors live in
+  // tests/fixtures/derivation-v4-vectors.json.
+  func computeDerivationInputV4(
+    chain : Chain,
+    tokenAddress : Text,
+    threshold : Nat,
+    epoch : Nat,
+    marketCapTarget : Nat,
+  ) : Blob {
+    let effectiveEpoch : Nat = if (threshold == 0) { 0 } else { epoch };
+    let preimage =
+      "accessol_v4:"
+      # chainToText(chain) # ":"
+      # tokenAddress # ":"
+      # Nat.toText(threshold) # ":"
+      # Nat.toText(effectiveEpoch) # ":"
+      # Nat.toText(marketCapTarget);
+    Sha256.fromBlob(#sha256, Text.encodeUtf8(preimage));
+  };
+
   // ── Epoch helper (Protocol v3) ─────────────────────────────────────
   // currentEpoch = floor(unix_seconds / EPOCH_LENGTH_SECONDS).
   // Used by v3 endpoints for future-epoch rejection and by the
@@ -837,6 +962,21 @@ persistent actor {
     let response = await (with cycles = CYCLE_BUDGET) vetkdCanister.vetkd_derive_key({
       input = derivationInput;
       context = VETKD_CONTEXT_V3;
+      transport_public_key = transportPublicKey;
+      key_id = vetkdKeyId();
+    });
+    response.encrypted_key;
+  };
+
+  // Protocol v4: identical shape, distinct context ("accessol_v4") so a
+  // drip key is partitioned from v1/v3 keys at the VetKD layer.
+  func deriveKeyV4(
+    derivationInput : Blob,
+    transportPublicKey : Blob,
+  ) : async Blob {
+    let response = await (with cycles = CYCLE_BUDGET) vetkdCanister.vetkd_derive_key({
+      input = derivationInput;
+      context = VETKD_CONTEXT_V4;
       transport_public_key = transportPublicKey;
       key_id = vetkdKeyId();
     });
@@ -894,6 +1034,32 @@ persistent actor {
       key_id = vetkdKeyId();
     });
     cachedVetKDPublicKeyV3 := ?response.public_key;
+    response.public_key;
+  };
+
+  /// Protocol-v4 counterpart of `getVetKDPublicKey`. Returns the
+  /// memoized v4 verification key; traps if `warmupVetKDPublicKeyV4`
+  /// has not yet been called. Distinct from v1/v3 because each protocol
+  /// derives under its own VetKD `context` blob and therefore has a
+  /// distinct master public key.
+  public query func getVetKDPublicKeyV4() : async Blob {
+    switch (cachedVetKDPublicKeyV4) {
+      case (?key) { key };
+      case null {
+        Runtime.trap("VetKD v4 public key not yet cached. Call warmupVetKDPublicKeyV4() first.");
+      };
+    };
+  };
+
+  /// Populate the protocol-v4 VetKD public-key cache. Call once after
+  /// deploy or on key rotation.
+  public func warmupVetKDPublicKeyV4() : async Blob {
+    let response = await vetkdCanister.vetkd_public_key({
+      canister_id = null;
+      context = VETKD_CONTEXT_V4;
+      key_id = vetkdKeyId();
+    });
+    cachedVetKDPublicKeyV4 := ?response.public_key;
     response.public_key;
   };
 
@@ -990,6 +1156,13 @@ persistent actor {
     #NonceAlreadyUsed;
     // Protocol v3: req.epoch refers to a future epoch (> currentEpoch()).
     #InvalidEpoch;
+    // Protocol v4: live market cap (whole USD) is below the requested
+    // chunk's unlock target. `required` = marketCapTarget, `actual` =
+    // current market cap, both in whole USD.
+    #MarketCapNotReached : { required : Nat; actual : Nat };
+    // Protocol v4: malformed oracle response, stale answer, or failed
+    // supply/decimals probe.
+    #InvalidOracle : Text;
   };
 
   public type GateResult = {
@@ -1050,6 +1223,33 @@ persistent actor {
     threshold : Nat;
     epoch : Nat;
     cids : [Text];
+    evmAddress : Text;
+    transportPublicKey : Blob;
+    nonce : Nat;
+    signature : Blob;
+    eip712ChainId : Nat;
+    eip712VerifyingContract : Text;
+  };
+
+  // ── Public types for protocol v4 gate endpoint ──────────────────────
+
+  // Market-cap-gated drip request (spec: haven-v4-marketcap-drip).
+  // Derivation keys on (chain, tokenAddress, threshold, effectiveEpoch,
+  // marketCapTarget); the canister refuses to derive until the live
+  // USD market cap of `tokenAddress` (via `oracleAddress`, a Chainlink
+  // aggregator) reaches `marketCapTarget` — whole USD units.
+  public type GateRequestV4 = {
+    chain : Chain;
+    tokenAddress : Text;
+    threshold : Nat;
+    epoch : Nat;
+    // Unlock target in WHOLE USD. The canister compares against the
+    // live cap scaled by ORACLE_PRICE_DECIMALS internally.
+    marketCapTarget : Nat;
+    // Chainlink AggregatorV3Interface proxy address for the token's
+    // USD price feed. Caller-supplied (stored in Arkiv as
+    // `oracle_address` by the publisher); validated as an address.
+    oracleAddress : Text;
     evmAddress : Text;
     transportPublicKey : Blob;
     nonce : Nat;
@@ -1384,6 +1584,240 @@ persistent actor {
     Map.add(approvedHolders, Text.compare, key, now);
   };
 
+  // ── Market-cap cache (Protocol v4) ─────────────────────────────────
+  // Burst-absorption only — see the declaration-site comment for why the
+  // TTL is five minutes rather than the approval cache's 30-day epoch.
+  // A failed oracle refresh never extends an existing entry's life: the
+  // stale entry is deleted BEFORE the fetch so a crash mid-refresh leaves
+  // no poisoned snapshot behind.
+
+  func marketCapCacheKey(chain : Chain, tokenAddress : Text) : Text {
+    chainToText(chain) # "|" # toLowerHex(stripHexPrefix(tokenAddress));
+  };
+
+  /// Fresh (non-expired) cap for `(chain, token)` if one exists.
+  /// Expired rows are lazily deleted on read, mirroring `isApprovedHolder`.
+  func getCachedMarketCap(chain : Chain, tokenAddress : Text) : ?Nat {
+    let key = marketCapCacheKey(chain, tokenAddress);
+    switch (Map.get(marketCapCache, Text.compare, key)) {
+      case (?entry) {
+        let nowSec = Time.now() / 1_000_000_000;
+        if (nowSec - entry.fetchedAt <= MARKET_CAP_CACHE_TTL_SECONDS) {
+          ?entry.capUsd8;
+        } else {
+          ignore Map.delete(marketCapCache, Text.compare, key);
+          null;
+        };
+      };
+      case null { null };
+    };
+  };
+
+  func recordMarketCap(chain : Chain, tokenAddress : Text, capUsd8 : Nat) {
+    let key = marketCapCacheKey(chain, tokenAddress);
+    Map.add(
+      marketCapCache,
+      Text.compare,
+      key,
+      { capUsd8 = capUsd8; fetchedAt = Time.now() / 1_000_000_000 },
+    );
+  };
+
+  // ── Oracle + ERC20 reads (Protocol v4) ─────────────────────────────
+
+  // Selector constants:
+  //   latestRoundData() = keccak("latestRoundData()")[0:4]  = 0xfeaf3996
+  //   totalSupply()     = keccak("totalSupply()")[0:4]      = 0x18160ddd
+  //   decimals()        = keccak("decimals()")[0:4]         = 0x313ce567
+  let SELECTOR_LATEST_ROUND_DATA : Text = "feaf3996";
+  let SELECTOR_TOTAL_SUPPLY : Text = "18160ddd";
+  let SELECTOR_DECIMALS : Text = "313ce567";
+
+  // Extract the i-th 32-byte word from an ABI-encoded return payload
+  // ("0x"-prefixed hex). Returns null when the payload is truncated.
+  func abiWordAt(hexResponse : Text, wordIndex : Nat) : ?Nat {
+    let stripped = stripHexPrefix(hexResponse);
+    let start = wordIndex * 64;
+    if (stripped.size() < start + 64) { return null };
+    var out = "";
+    var i : Nat = 0;
+    for (c in stripped.chars()) {
+      if (i >= start and i < start + 64) {
+        out #= Text.fromChar(c);
+      };
+      i += 1;
+      if (i >= start + 64) { break };
+    };
+    hexToNat(out);
+  };
+
+  // Minimal eth_call wrapper returning the raw hex response. Every v4
+  // chain probe funnels through here so cycle budget + consensus policy
+  // stay consistent with `checkBalance`.
+  func ethCallRaw(
+    chain : Chain,
+    contractAddress : Text,
+    calldata : Text,
+  ) : async Result.Result<Text, Text> {
+    switch (validateEvmAddress(contractAddress)) {
+      case (#err(msg)) { return #err("contract address: " # msg) };
+      case (#ok(_)) {};
+    };
+
+    let rpcConfig : RpcConfig = {
+      responseSizeEstimate = null;
+      responseConsensus = ?#Threshold({ total = ?3 : ?Nat8; min = 2 : Nat8 });
+    };
+
+    let callArgs : CallArgs = {
+      transaction = {
+        to = ?contractAddress;
+        input = ?calldata;
+        accessList = null;
+        blobVersionedHashes = null;
+        blobs = null;
+        chainId = null;
+        from = null;
+        gas = null;
+        gasPrice = null;
+        maxFeePerBlobGas = null;
+        maxFeePerGas = null;
+        maxPriorityFeePerGas = null;
+        nonce = null;
+        type_ = null;
+        value = null;
+      };
+      block = null;
+    };
+
+    let result = await (with cycles = CYCLE_BUDGET) evmRpc.eth_call(
+      chainToRpcServices(chain),
+      ?rpcConfig,
+      callArgs,
+    );
+
+    switch (result) {
+      case (#Consistent(#Ok(hex))) { #ok(hex) };
+      case (#Consistent(#Err(rpcError))) {
+        #err("RPC error: " # debug_show rpcError);
+      };
+      case (#Inconsistent(results)) {
+        #err("providers returned inconsistent results: " # debug_show results);
+      };
+    };
+  };
+
+  // Token decimals with permanent caching (immutable per contract).
+  func fetchTokenDecimals(chain : Chain, tokenAddress : Text) : async Result.Result<Nat, Text> {
+    let key = marketCapCacheKey(chain, tokenAddress);
+    switch (Map.get(tokenDecimalsCache, Text.compare, key)) {
+      case (?d) { return #ok(d) };
+      case null {};
+    };
+    let hex = switch (await ethCallRaw(chain, tokenAddress, "0x" # SELECTOR_DECIMALS)) {
+      case (#ok(h)) { h };
+      case (#err(msg)) { return #err("decimals() call failed: " # msg) };
+    };
+    switch (abiWordAt(hex, 0)) {
+      case (?d) {
+        // Sanity bound: uint8 per ERC20; reject absurd encodings.
+        if (d > 255) {
+          return #err("decimals() returned out-of-range value");
+        };
+        Map.add(tokenDecimalsCache, Text.compare, key, d);
+        #ok(d);
+      };
+      case null { #err("decimals(): malformed ABI payload") };
+    };
+  };
+
+  // Raw totalSupply().
+  func fetchTotalSupply(chain : Chain, tokenAddress : Text) : async Result.Result<Nat, Text> {
+    let hex = switch (await ethCallRaw(chain, tokenAddress, "0x" # SELECTOR_TOTAL_SUPPLY)) {
+      case (#ok(h)) { h };
+      case (#err(msg)) { return #err("totalSupply() call failed: " # msg) };
+    };
+    switch (abiWordAt(hex, 0)) {
+      case (?s) { #ok(s) };
+      case null { #err("totalSupply(): malformed ABI payload") };
+    };
+  };
+
+  // Chainlink AggregatorV3Interface.latestRoundData():
+  // returns (uint80 roundId, int256 answer, uint256 startedAt,
+  //          uint256 updatedAt, uint80 answeredInRound)
+  // We validate word[1] (answer > 0) and word[3] (updatedAt freshness).
+  func fetchOraclePriceUsd8(
+    chain : Chain,
+    oracleAddress : Text,
+  ) : async Result.Result<Nat, Text> {
+    let hex = switch (
+      await ethCallRaw(chain, oracleAddress, "0x" # SELECTOR_LATEST_ROUND_DATA)
+    ) {
+      case (#ok(h)) { h };
+      case (#err(msg)) { return #err("latestRoundData() call failed: " # msg) };
+    };
+
+    // Negative answers encode as 2^256-x; any value above the signed
+    // positive range would be nonsense for a USD feed. Bound-check by
+    // requiring the top byte to be zero (price << 2^248 in practice).
+    let answer = switch (abiWordAt(hex, 1)) {
+      case (?a) { a };
+      case null { return #err("latestRoundData(): malformed answer word") };
+    };
+    if (answer == 0 or answer >= (2 ** 248)) {
+      return #err("latestRoundData(): non-positive price answer");
+    };
+
+    let updatedAt = switch (abiWordAt(hex, 3)) {
+      case (?u) { u };
+      case null { return #err("latestRoundData(): malformed updatedAt word") };
+    };
+    let nowSec : Int = Time.now() / 1_000_000_000;
+    let updatedAtInt : Int = updatedAt;
+    if (updatedAtInt > nowSec + 300) {
+      return #err("latestRoundData(): updatedAt in the future");
+    };
+    if (nowSec - updatedAtInt > MAX_ORACLE_STALENESS_SECONDS) {
+      return #err("latestRoundData(): stale oracle answer");
+    };
+
+    #ok(answer);
+  };
+
+  /// Live USD market cap of `tokenAddress`, scaled by ORACLE_PRICE_DECIMALS:
+  ///   capUsd8 = totalSupplyRaw * priceAnswer / 10^tokenDecimals
+  /// Uses the short-TTL burst cache; on miss performs up to three eth_calls
+  /// (price via `oracleAddress`, totalSupply + decimals via the token).
+  public func getMarketCapUsd(
+    chain : Chain,
+    tokenAddress : Text,
+    oracleAddress : Text,
+  ) : async Result.Result<Nat, Text> {
+    // Whole-USD convenience view on top of the scaled cache value.
+    switch (getCachedMarketCap(chain, tokenAddress)) {
+      case (?capUsd8) { return #ok(capUsd8 / (10 ** ORACLE_PRICE_DECIMALS)) };
+      case null {};
+    };
+
+    let decimals = switch (await fetchTokenDecimals(chain, tokenAddress)) {
+      case (#ok(d)) { d };
+      case (#err(msg)) { return #err(msg) };
+    };
+    let supplyRaw = switch (await fetchTotalSupply(chain, tokenAddress)) {
+      case (#ok(s)) { s };
+      case (#err(msg)) { return #err(msg) };
+    };
+    let priceUsd8 = switch (await fetchOraclePriceUsd8(chain, oracleAddress)) {
+      case (#ok(p)) { p };
+      case (#err(msg)) { return #err(msg) };
+    };
+
+    let capUsd8 = supplyRaw * priceUsd8 / (10 ** decimals);
+    recordMarketCap(chain, tokenAddress, capUsd8);
+    #ok(capUsd8 / (10 ** ORACLE_PRICE_DECIMALS));
+  };
+
 
   // ── Protocol v3 gate endpoints ─────────────────────────────────────
 
@@ -1642,6 +2076,183 @@ persistent actor {
     } catch (e) {
       #err(#VetKDError(Error.message(e)));
     };
+  };
+
+  // ── requestDecryptionKeyV4 endpoint (Protocol v4) ──────────────────
+  //
+  // Market-cap-gated drip unlock (spec: haven-v4-marketcap-drip).
+  // Flow mirrors v3 with one additional gate:
+  //   Step 0  future-epoch rejection
+  //   Step A  input validation (+ oracleAddress)
+  //   Step B  EIP-712 verification under the v4 typehash — the signature
+  //           commits to (epoch, marketCapTarget), so a reader cannot
+  //           reuse a low-target signature to claim a higher chunk
+  //   Step C  holder gate: caller must hold `threshold` of `tokenAddress`
+  //           (approval cache → eth_call fallthrough, shared with v3)
+  //   Step D  market-cap gate: live cap via Chainlink `latestRoundData`
+  //           + ERC20 `totalSupply`/`decimals`, burst-cached for
+  //           MARKET_CAP_CACHE_TTL_SECONDS; rejects with
+  //           #MarketCapNotReached until cap >= target
+  //   Step E  VetKD derivation over "accessol_v4" context with the
+  //           target baked into the preimage
+  public func requestDecryptionKeyV4(req : GateRequestV4) : async GateResult {
+    // ── Step 0: Future-epoch rejection (before any side effect) ──
+    if (req.epoch > currentEpoch()) {
+      return #err(#InvalidEpoch);
+    };
+
+    // ── Step A: Input validation ──
+    switch (validateAddress(req.tokenAddress, "tokenAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.oracleAddress, "oracleAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.evmAddress, "evmAddress")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    switch (validateAddress(req.eip712VerifyingContract, "eip712VerifyingContract")) {
+      case (?e) { return #err(e) };
+      case null {};
+    };
+    if (Blob.toArray(req.transportPublicKey).size() == 0) return #err(#InvalidAddress("transportPublicKey must not be empty"));
+    if (Blob.toArray(req.signature).size() != 65) return #err(#InvalidSignature("signature must be 65 bytes [r||s||v]"));
+
+    // ── Step B: EIP-712 signature verification (v4 typehash) ──
+    let domainSeparator = switch (eip712DomainSeparator(APP_NAME, req.eip712ChainId, req.eip712VerifyingContract)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct domain separator")) };
+    };
+
+    // Nonce replay check (scoped to v4 typehash; never collides with v1/v3)
+    let nonceScopeKey = gateV4NonceReplayKey(domainSeparator);
+    let scopedNonce = blobToHex(nonceScopeKey) # ":gate_v4:" # Nat.toText(req.nonce);
+    if (Map.get(usedNonces, Text.compare, scopedNonce) != null) {
+      return #err(#NonceAlreadyUsed);
+    };
+    Map.add(usedNonces, Text.compare, scopedNonce, true);
+
+    let structHash = switch (eip712GateStructHashV4(req.evmAddress, req.transportPublicKey, req.epoch, req.marketCapTarget, req.nonce)) {
+      case (?h) { h };
+      case null { return #err(#InvalidSignature("failed to construct v4 struct hash")) };
+    };
+    let digest = switch (eip712Digest(domainSeparator, structHash)) {
+      case (?d) { d };
+      case null { return #err(#InvalidSignature("failed to construct digest")) };
+    };
+
+    let signatureBytes = Blob.toArray(req.signature);
+    let rBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i]));
+    let sBlob = Blob.fromArray(Array.tabulate<Nat8>(32, func(i : Nat) : Nat8 = signatureBytes[i + 32]));
+    let vByte = signatureBytes[64];
+    if (vByte != 27 and vByte != 28) return #err(#InvalidSignature("v must be 27 or 28"));
+
+    let recoveredAddressLower = switch (Secp256k1.ecrecover(digest, vByte, rBlob, sBlob, keccak256)) {
+      case (#ok(addressBlob)) { blobToHex(addressBlob) };
+      case (#err(msg)) { return #err(#InvalidSignature("ecrecover failed: " # msg)) };
+    };
+    let expectedAddressLower = toLowerHex(stripHexPrefix(req.evmAddress));
+    if (recoveredAddressLower != expectedAddressLower) return #err(#InvalidSignature("signature does not match evmAddress"));
+
+    // ── Step C: Holder gate (approval cache → EVM RPC fallthrough) ──
+    // Caller must hold `threshold` of the gate token. Shares the v3
+    // approval cache verbatim — the holding requirement is identical,
+    // only the additional unlock condition differs.
+    if (req.threshold != 0) {
+      if (not isApprovedHolder(req.chain, req.tokenAddress, req.threshold, req.epoch, req.evmAddress)) {
+        let balanceResult = await checkBalance(req.chain, req.tokenAddress, req.evmAddress);
+        let balance = switch (balanceResult) {
+          case (#ok(b)) { b };
+          case (#err(#InvalidAddress(msg))) { return #err(#InvalidAddress(msg)) };
+          case (#err(#EvmRpcError(msg))) { return #err(#EvmRpcError(msg)) };
+        };
+        if (balance < req.threshold) {
+          return #err(#InsufficientBalance({ required = req.threshold; actual = balance }));
+        };
+        recordApproval(req.chain, req.tokenAddress, req.threshold, req.epoch, req.evmAddress);
+      };
+    };
+
+    // ── Step D: Market-cap gate (burst-cached oracle read) ──
+    // targetUsd8 puts the publisher's whole-USD target in the same fixed
+    // scale as the cached cap so the comparison is pure Nat math. The
+    // delete-then-fetch ordering guarantees a failed refresh cannot
+    // extend the life of a stale snapshot.
+    let targetUsd8 : Nat = req.marketCapTarget * (10 ** ORACLE_PRICE_DECIMALS);
+    let capUsd8 = switch (getCachedMarketCap(req.chain, req.tokenAddress)) {
+      case (?cached) { cached };
+      case null {
+        ignore Map.delete(marketCapCache, Text.compare, marketCapCacheKey(req.chain, req.tokenAddress));
+        switch (await getMarketCapUsdInternal(req.chain, req.tokenAddress, req.oracleAddress)) {
+          case (#ok(fresh)) { fresh };
+          case (#err(msg)) { return #err(#InvalidOracle(msg)) };
+        };
+      };
+    };
+    if (capUsd8 < targetUsd8) {
+      return #err(#MarketCapNotReached({
+        required = req.marketCapTarget;
+        actual = capUsd8 / (10 ** ORACLE_PRICE_DECIMALS);
+      }));
+    };
+
+    // ── Step E: VetKD derivation (v4 context + target in preimage) ──
+    let derivationInput = computeDerivationInputV4(
+      req.chain,
+      req.tokenAddress,
+      req.threshold,
+      req.epoch,
+      req.marketCapTarget,
+    );
+    try {
+      let encryptedKey = await deriveKeyV4(derivationInput, req.transportPublicKey);
+      // verification_key MUST be fetched under the same context the
+      // derivation used (VETKD_CONTEXT_V4) — same rule as v3.
+      let verificationKey = switch (cachedVetKDPublicKeyV4) {
+        case (?k) { k };
+        case null {
+          let resp = await vetkdCanister.vetkd_public_key({
+            canister_id = null;
+            context = VETKD_CONTEXT_V4;
+            key_id = vetkdKeyId();
+          });
+          cachedVetKDPublicKeyV4 := ?resp.public_key;
+          resp.public_key;
+        };
+      };
+      #ok({ encrypted_key = encryptedKey; verification_key = verificationKey });
+    } catch (e) {
+      #err(#VetKDError(Error.message(e)));
+    };
+  };
+
+  /// Internal refresh path used by requestDecryptionKeyV4. Unlike the
+  /// public `getMarketCapUsd`, this returns the SCALED value and always
+  /// performs a fresh fetch (the caller has already handled the
+  /// cache-hit case).
+  func getMarketCapUsdInternal(
+    chain : Chain,
+    tokenAddress : Text,
+    oracleAddress : Text,
+  ) : async Result.Result<Nat, Text> {
+    let decimals = switch (await fetchTokenDecimals(chain, tokenAddress)) {
+      case (#ok(d)) { d };
+      case (#err(msg)) { return #err(msg) };
+    };
+    let supplyRaw = switch (await fetchTotalSupply(chain, tokenAddress)) {
+      case (#ok(s)) { s };
+      case (#err(msg)) { return #err(msg) };
+    };
+    let priceUsd8 = switch (await fetchOraclePriceUsd8(chain, oracleAddress)) {
+      case (#ok(p)) { p };
+      case (#err(msg)) { return #err(msg) };
+    };
+    let capUsd8 = supplyRaw * priceUsd8 / (10 ** decimals);
+    recordMarketCap(chain, tokenAddress, capUsd8);
+    #ok(capUsd8);
   };
 
   /// Ops diagnostic only; NEVER call this on the hot path (upload or
@@ -2167,6 +2778,38 @@ persistent actor {
     var i : Nat = 0;
     while (i < found) {
       if (Map.delete(approvedHolders, Text.compare, toDelete[i])) {
+        deleted += 1;
+      };
+      i += 1;
+    };
+    deleted;
+  };
+
+  /// Controller-only janitor for the v4 market-cap burst cache. Deletes
+  /// entries older than MARKET_CAP_CACHE_TTL_SECONDS. Time-based (NOT
+  /// epoch-based): the cap snapshot is only meaningful while fresh, so
+  /// expiry follows the fetch timestamp, mirroring the lazy delete in
+  /// `getCachedMarketCap`. Returns the number of rows removed.
+  public shared (msg) func evictExpiredMarketCaps(maxBatch : Nat) : async Nat {
+    if (not Principal.isController(msg.caller)) {
+      Runtime.trap("evictExpiredMarketCaps: caller is not a controller");
+    };
+    if (maxBatch == 0) { return 0 };
+    let nowSec = Time.now() / 1_000_000_000;
+    // Collect first, delete second — Map mutation during iteration is unsafe.
+    let toDelete = VarArray.tabulate<Text>(maxBatch, func _ = "");
+    var found : Nat = 0;
+    label scan for ((key, entry) in Map.entries(marketCapCache)) {
+      if (nowSec - entry.fetchedAt > MARKET_CAP_CACHE_TTL_SECONDS) {
+        toDelete[found] := key;
+        found += 1;
+        if (found == maxBatch) { break scan };
+      };
+    };
+    var deleted : Nat = 0;
+    var i : Nat = 0;
+    while (i < found) {
+      if (Map.delete(marketCapCache, Text.compare, toDelete[i])) {
         deleted += 1;
       };
       i += 1;

@@ -358,11 +358,12 @@ def parse_gate_metadata(
 ) -> Union[dict, None]:
     """Dispatching gate-metadata parser.
 
-    Routes records to the v1 or v3 parser based on the integer
+    Routes records to the v1, v3, or v4 parser based on the integer
     ``version`` discriminator:
 
       * ``version == 1`` → v1 parser (record returned unchanged).
       * ``version == 3`` → v3 parser (record returned with validated fields).
+      * ``version == 4`` → v4 parser (see ``haven_aol.v4``).
       * anything else    → ``None``.
 
     Returns a dict (with the ``version`` key intact) or ``None`` on any
@@ -376,6 +377,12 @@ def parse_gate_metadata(
         return None
     if version == GATE_METADATA_VERSION_V3:
         return parse_gate_metadata_v3(record)
+    if version == 4:
+        # Imported lazily so v3 stays dependency-free at module load; the
+        # v4 parser lives in ``haven_aol.v4`` (pure Python, stdlib only).
+        from haven_aol.v4 import parse_gate_metadata_v4
+
+        return parse_gate_metadata_v4(record)
     if version == 1:
         return _parse_gate_metadata_v1(record)
     return None

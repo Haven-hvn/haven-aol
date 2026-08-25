@@ -1,0 +1,118 @@
+{
+  "version": 4,
+  "constants": {
+    "epochLengthSeconds": 2592000,
+    "domainTag": "accessol_v4:",
+    "vetkdContext": "accessol_v4",
+    "eip712TypeString": "GateRequestV4(address evmAddress,bytes transportPublicKey,uint256 epoch,uint256 marketCapTarget,uint256 nonce)",
+    "eip712TypehashHex": "b9d5f143468a4d6e11bd1d2ff3eb546445b99a1e871adde2cd2c6008e2980afd",
+    "oraclePriceDecimals": 8,
+    "marketCapCacheTtlSeconds": 300
+  },
+  "vectors": [
+    {
+      "name": "standard-base-mainnet-drip-chunk",
+      "kind": "positive",
+      "input": {
+        "chain": "BaseMainnet",
+        "tokenAddress": "0xAa70bC79fD1cB4a6FBA717018351F0C3c64B79Df",
+        "threshold": 5,
+        "epoch": 670,
+        "marketCapTarget": 5000000
+      },
+      "effectiveEpoch": 670,
+      "expected": {
+        "preimageUtf8": "accessol_v4:BaseMainnet:0xAa70bC79fD1cB4a6FBA717018351F0C3c64B79Df:5:670:5000000",
+        "preimageHex": "6163636573736f6c5f76343a426173654d61696e6e65743a3078416137306243373966443163423461364642413731373031383335314630433363363442373944663a353a3637303a35303030303030",
+        "derivationInputHex": "481c47e309718312bd013b8c9ef22a64838dd7a923d4203de55be662ac09aeb8"
+      }
+    },
+    {
+      "name": "eth-mainnet-teaser-target-one",
+      "kind": "positive",
+      "input": {
+        "chain": "EthMainnet",
+        "tokenAddress": "0x0000000000000000000000000000000000000001",
+        "threshold": 1,
+        "epoch": 671,
+        "marketCapTarget": 1000000
+      },
+      "effectiveEpoch": 671,
+      "expected": {
+        "preimageUtf8": "accessol_v4:EthMainnet:0x0000000000000000000000000000000000000001:1:671:1000000",
+        "preimageHex": "6163636573736f6c5f76343a4574684d61696e6e65743a3078303030303030303030303030303030303030303030303030303030303030303030303030303030313a313a3637313a31303030303030",
+        "derivationInputHex": "101ced3daa5964741899e760385fec8e22f0d87fbcd6c8db4de9404775cfe00a"
+      }
+    },
+    {
+      "name": "zero-market-cap-target-included-in-preimage",
+      "kind": "positive",
+      "input": {
+        "chain": "ArbitrumOne",
+        "tokenAddress": "0x1111111111111111111111111111111111111111",
+        "threshold": 2,
+        "epoch": 670,
+        "marketCapTarget": 0
+      },
+      "effectiveEpoch": 670,
+      "expected": {
+        "preimageUtf8": "accessol_v4:ArbitrumOne:0x1111111111111111111111111111111111111111:2:670:0",
+        "preimageHex": "6163636573736f6c5f76343a417262697472756d4f6e653a3078313131313131313131313131313131313131313131313131313131313131313131313131313131313a323a3637303a30",
+        "derivationInputHex": "2441a3575ee465c2bb27a0ede12cba740b89e38d010995899a1527bf59fab86a"
+      }
+    },
+    {
+      "name": "threshold-zero-collapse-epoch-with-target",
+      "kind": "threshold-zero-collapse",
+      "input": {
+        "chain": "OptimismMainnet",
+        "tokenAddress": "0x2222222222222222222222222222222222222222",
+        "threshold": 0,
+        "epoch": 999,
+        "marketCapTarget": 10000000
+      },
+      "effectiveEpoch": 0,
+      "expected": {
+        "preimageUtf8": "accessol_v4:OptimismMainnet:0x2222222222222222222222222222222222222222:0:0:10000000",
+        "preimageHex": "6163636573736f6c5f76343a4f7074696d69736d4d61696e6e65743a3078323232323232323232323232323232323232323232323232323232323232323232323232323232323a303a303a3130303030303030",
+        "derivationInputHex": "7deb7f70cf1f6be7c998226c179ceace6362b0cc58c8027d9128654a628ffb7e"
+      },
+      "collapseNote": "threshold==0 collapses epoch to 0; target always participates"
+    },
+    {
+      "name": "target-distinguishes-same-corpus",
+      "kind": "positive",
+      "input": {
+        "chain": "BaseMainnet",
+        "tokenAddress": "0xAa70bC79fD1cB4a6FBA717018351F0C3c64B79Df",
+        "threshold": 5,
+        "epoch": 670,
+        "marketCapTarget": 10000000
+      },
+      "effectiveEpoch": 670,
+      "expected": {
+        "preimageUtf8": "accessol_v4:BaseMainnet:0xAa70bC79fD1cB4a6FBA717018351F0C3c64B79Df:5:670:10000000",
+        "preimageHex": "6163636573736f6c5f76343a426173654d61696e6e65743a3078416137306243373966443163423461364642413731373031383335314630433363363442373944663a353a3637303a3130303030303030",
+        "derivationInputHex": "c518f628a90769a051a254d3cfd297454ff8b6c218bb86c3dfe7318e3997ab4e"
+      }
+    },
+    {
+      "name": "future-epoch-rejected",
+      "kind": "negative-future-epoch",
+      "input": {
+        "chain": "EthSepolia",
+        "tokenAddress": "0x3333333333333333333333333333333333333333",
+        "threshold": 1,
+        "epoch": 999999999,
+        "marketCapTarget": 1000000
+      },
+      "effectiveEpoch": 999999999,
+      "expected": {
+        "preimageUtf8": "accessol_v4:EthSepolia:0x3333333333333333333333333333333333333333:1:999999999:1000000",
+        "preimageHex": "6163636573736f6c5f76343a4574685365706f6c69613a3078333333333333333333333333333333333333333333333333333333333333333333333333333333333a313a3939393939393939393a31303030303030",
+        "derivationInputHex": "2b1044e8f8f2ecf3de56620272d5732f1c0912878b0a9018d42a89e51e54a36c"
+      },
+      "expectedError": "InvalidEpoch"
+    }
+  ]
+}

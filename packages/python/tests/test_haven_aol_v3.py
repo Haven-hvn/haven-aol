@@ -491,7 +491,8 @@ class TestParseGateMetadataDispatch:
 
     def test_dispatch_unknown_version_returns_none(self):
         assert parse_gate_metadata({"version": 2, "cid": "Qm"}) is None
-        assert parse_gate_metadata({"version": 4, "cid": "Qm"}) is None
+        # version 4 now routes to the v4 parser (haven_aol.v4); a v4-shaped
+        # record parses successfully, an invalid one still returns None.
         assert parse_gate_metadata({"version": "3", "cid": "Qm"}) is None
 
     def test_dispatch_garbage_returns_none(self):

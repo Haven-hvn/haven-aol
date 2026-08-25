@@ -28,6 +28,11 @@ type GateError = variant {
   InvalidSignature : text;
   NonceAlreadyUsed;
   InvalidEpoch;
+  // Protocol v4: live market cap below the chunk's unlock target
+  // (whole USD on both fields).
+  MarketCapNotReached : record { required : nat; actual : nat };
+  // Protocol v4: malformed/stale oracle response or failed supply probe.
+  InvalidOracle : text;
 };
 
 type GateResult = variant {
@@ -164,6 +169,27 @@ type BatchGateRequestV3 = record {
   eip712VerifyingContract : text;
 };
 
+// ── Protocol v4 (market-cap-gated drip) types ──────────────────────
+// Derivation keys on (chain, tokenAddress, threshold, effectiveEpoch,
+// marketCapTarget); the canister refuses to derive until the live USD
+// market cap of `tokenAddress` (via `oracleAddress`, a Chainlink
+// aggregator) reaches `marketCapTarget`. Whole-USD target units.
+
+type GateRequestV4 = record {
+  chain : Chain;
+  tokenAddress : text;
+  threshold : nat;
+  epoch : nat;
+  marketCapTarget : nat;
+  oracleAddress : text;
+  evmAddress : text;
+  transportPublicKey : blob;
+  nonce : nat;
+  signature : blob;
+  eip712ChainId : nat;
+  eip712VerifyingContract : text;
+};
+
 service : {
   requestDecryptionKey : (GateRequest) -> (GateResult);
   batchRequestDecryptionKey : (BatchGateRequest) -> (BatchGateResult);
@@ -186,5 +212,17 @@ service : {
   // Controller-only janitor (Sprint 1 · Task 02). Operator cron calls in
   // a loop until it returns 0. Non-controllers cause a trap.
   evictExpiredApprovals : (nat) -> (nat);
+  // ── Protocol v4 endpoints (market-cap-gated drip) ──
+  requestDecryptionKeyV4 : (GateRequestV4) -> (GateResult);
+  getVetKDPublicKeyV4 : () -> (blob) query;
+  warmupVetKDPublicKeyV4 : () -> (blob);
+  // Live USD market cap for a token via its Chainlink aggregator.
+  // Diagnostic/preview helper — the gate endpoint performs its own
+  // (burst-cached) fetch; callers should not round-trip through this
+  // before every decrypt.
+  getMarketCapUsd : (Chain, text, text) -> (variant { ok : nat; err : text });
+  // Controller-only janitor for the v4 market-cap burst cache
+  // (5-minute TTL). Operator cron calls in a loop until it returns 0.
+  evictExpiredMarketCaps : (nat) -> (nat);
 
 }

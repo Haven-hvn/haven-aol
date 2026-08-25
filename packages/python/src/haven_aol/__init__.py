@@ -50,6 +50,20 @@ from haven_aol.v3 import (
     build_eip712_gate_request_v3_typed_data,
 )
 
+# v4 surface — always available (pure Python).
+from haven_aol.v4 import (
+    GATE_METADATA_VERSION_V4,
+    EIP712_GATE_REQUEST_V4_TYPE_STRING,
+    EIP712_GATE_REQUEST_V4_TYPEHASH,
+    ORACLE_PRICE_DECIMALS,
+    MARKET_CAP_CACHE_TTL_SECONDS,
+    compute_derivation_input_v4,
+    build_gate_metadata_v4,
+    gate_metadata_v4_to_json,
+    parse_gate_metadata_v4,
+    build_eip712_gate_request_v4_typed_data,
+)
+
 #: v1 metadata version constant (re-exported for symmetry with v3).
 GATE_METADATA_VERSION: int = 1
 
@@ -74,4 +88,15 @@ __all__ = [
     "parse_gate_metadata_v3",
     "parse_gate_metadata",
     "build_eip712_gate_request_v3_typed_data",
+    # v4 surface (always available)
+    "GATE_METADATA_VERSION_V4",
+    "EIP712_GATE_REQUEST_V4_TYPE_STRING",
+    "EIP712_GATE_REQUEST_V4_TYPEHASH",
+    "ORACLE_PRICE_DECIMALS",
+    "MARKET_CAP_CACHE_TTL_SECONDS",
+    "compute_derivation_input_v4",
+    "build_gate_metadata_v4",
+    "gate_metadata_v4_to_json",
+    "parse_gate_metadata_v4",
+    "build_eip712_gate_request_v4_typed_data",
 ]

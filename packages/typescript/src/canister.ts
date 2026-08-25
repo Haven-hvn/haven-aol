@@ -32,6 +32,9 @@ interface HavenAolCanisterActor {
   requestDecryptionKey: ActorMethod<[GateRequest], RawGateResult>;
   batchRequestDecryptionKey: ActorMethod<[unknown], RawBatchGateResult>;
   getVetKDPublicKey: ActorMethod<[], Uint8Array | number[]>;
+  // Protocol v4: market-cap-gated drip verification key (distinct VetKD
+  // context "accessol_v4" ⇒ distinct master public key from v1).
+  getVetKDPublicKeyV4: ActorMethod<[], Uint8Array | number[]>;
   getAttestationPublicKey: ActorMethod<[], Uint8Array | number[]>;
 }
 
@@ -106,6 +109,8 @@ const idlFactory = () =>
     requestDecryptionKey: IDL.Func([GateRequestType], [GateResultVariant], []),
     batchRequestDecryptionKey: IDL.Func([BatchGateRequestType], [BatchGateResultVariant], []),
     getVetKDPublicKey: IDL.Func([], [IDL.Vec(IDL.Nat8)], ["query"]),
+    // Protocol v4 (market-cap-gated drip).
+    getVetKDPublicKeyV4: IDL.Func([], [IDL.Vec(IDL.Nat8)], ["query"]),
     getAttestationPublicKey: IDL.Func([], [IDL.Vec(IDL.Nat8)], ["query"]),
   });
 
@@ -257,6 +262,24 @@ export async function fetchVerificationKey(
 ): Promise<Uint8Array> {
   const actor = getOrCreateActor(agent, canisterId);
   const result = await actor.getVetKDPublicKey();
+  return new Uint8Array(result);
+}
+
+/**
+ * Call the canister's getVetKDPublicKeyV4 endpoint — the Protocol v4
+ * ("accessol_v4" context) verification key.
+ *
+ * V4 PUBLISHERS MUST USE THIS KEY for IBE encryption: the canister derives
+ * drip keys under the v4 context, so wrapping a content key under the v1
+ * dpk produces ciphertext no reader can unwrap. Traps server-side until
+ * `warmupVetKDPublicKeyV4` has been called once post-deploy.
+ */
+export async function fetchVerificationKeyV4(
+  agent: HttpAgent,
+  canisterId: string,
+): Promise<Uint8Array> {
+  const actor = getOrCreateActor(agent, canisterId);
+  const result = await actor.getVetKDPublicKeyV4();
   return new Uint8Array(result);
 }
 

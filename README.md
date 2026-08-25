@@ -43,6 +43,48 @@ SHA-256("accessol_v3:" + chain + ":" + tokenAddress + ":" + threshold + ":" + ef
 
 ---
 
+### v4 — Market-cap-gated drip derivation
+
+Progressive unlock for public DAO drops: a release is split into chunks, each pinned to its own unlock target `T_i` (whole USD). The canister refuses to derive a chunk key until the **live USD market cap** of the gate token reaches that chunk's target. Spec: `haven-v4-marketcap-drip.md`.
+
+**Derivation preimage:**
+```
+SHA-256("accessol_v4:" + chain + ":" + tokenAddress + ":" + threshold + ":" + effectiveEpoch + ":" + marketCapTarget)
+```
+
+**VetKD context:** `accessol_v4` (distinct master public key from v1/v3)
+
+**Market-cap oracle:** Chainlink `AggregatorV3Interface.latestRoundData()` (8-decimal USD answer) × ERC20 `totalSupply()` ÷ `decimals()`. The oracle address is caller-supplied per request (`oracleAddress`) and stored by publishers in Arkiv as `oracle_address`.
+
+**Market-cap burst cache:** cap snapshots are cached per `(chain, token)` for **300 seconds only** — deliberately NOT the 30-day approval-cache epoch. Crypto markets reprice continuously; a long-lived snapshot would make unlock decisions meaningless. A failed refresh never extends a stale snapshot's life. ERC20 `decimals()` IS cached permanently (immutable per contract). Answers older than 24h (`updatedAt`) are rejected — dead feeds fail closed.
+
+**Gate order:** future-epoch rejection → EIP-712 verify (signature commits to `(epoch, marketCapTarget)`) → holder gate (shared approval cache with v3) → market-cap gate → VetKD derive.
+
+---
+
+### v4 — Gate flow (market-cap decryption keys)
+
+| Method | Call type | Description |
+|--------|-----------|-------------|
+| `requestDecryptionKeyV4` | update | Gate proof → balance check (cached) → live market-cap check → VetKD v4 ciphertext |
+| `getVetKDPublicKeyV4` | query | VetKD verification key for v4 (cached; distinct from v1/v3 keys) |
+| `warmupVetKDPublicKeyV4` | update | Populate v4 VetKD key cache |
+| `getMarketCapUsd` | update | Diagnostic: live whole-USD cap via `(chain, token, oracle)` |
+| `evictExpiredMarketCaps` | update | Controller-only janitor for the 5-minute cap burst cache |
+
+**EIP-712 type (v4):**
+```
+GateRequestV4(address evmAddress,bytes transportPublicKey,uint256 epoch,uint256 marketCapTarget,uint256 nonce)
+```
+
+**Key differences from v3:**
+- Request carries `marketCapTarget` (whole USD) + `oracleAddress`; both participate in validation.
+- The signature commits to the requested target — a reader cannot sign once at a low target and claim a higher-unlocked chunk.
+- New errors: `#MarketCapNotReached { required, actual }` (whole USD) and `#InvalidOracle`.
+- Derivation includes the target: two drip chunks with different targets always derive different keys, even at identical `(chain, token, threshold, epoch)`.
+
+---
+
 ## Quick start
 
 See [`tests/README.md`](tests/README.md) for integration tests, local replica setup, and dependency installation (including native VetKD bindings).
@@ -128,7 +170,9 @@ Attestation payload fields: `evmAddress`, `chain`, `tokenAddress`, `threshold`, 
 | `VetKDError` | VetKD derivation failed |
 | `InvalidSignature` | EIP-712 signature verification failed |
 | `NonceAlreadyUsed` | Nonce was already consumed in this scope |
-| `InvalidEpoch` | (v3 only) Epoch is in the future |
+| `InvalidEpoch` | (v3+) Epoch is in the future |
+| `MarketCapNotReached` | (v4 only) Live cap below the chunk's unlock target (whole USD) |
+| `InvalidOracle` | (v4 only) Malformed/stale oracle response or failed supply probe |
 
 ---
 
@@ -139,6 +183,7 @@ After deploy or if a query traps with "not yet cached", run **all three** warmup
 ```bash
 icp canister call backend warmupVetKDPublicKey '()' -e ic --identity <YOUR_IDENTITY>
 icp canister call backend warmupVetKDPublicKeyV3 '()' -e ic --identity <YOUR_IDENTITY>
+icp canister call backend warmupVetKDPublicKeyV4 '()' -e ic --identity <YOUR_IDENTITY>
 icp canister call backend warmupAttestationPublicKey '()' -e ic --identity <YOUR_IDENTITY>
 ```
 
