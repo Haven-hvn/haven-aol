@@ -19,6 +19,9 @@
 //   • Pure functions; no I/O, no side effects. NO oracle calls live here:
 //     market-cap enforcement is canister-side (`requestDecryptionKeyV4`).
 //   • v4 is additive; it shares `Chain` with v1/v3 and nothing else.
+//   • Arkiv marker: entities carrying v4 gates store `gate_type = 4`
+//     (ATTR_UINT; 1=per-file, 3=per-epoch, 4=per-marketcap;
+//     `gate_type == gate.version`). The gate JSON `version` field is unchanged.
 // =============================================================================
 
 import { keccak256, toUtf8Bytes, getBytes } from "ethers";

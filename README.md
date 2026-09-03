@@ -11,7 +11,7 @@ This repository contains:
 
 ## Protocol Versions
 
-Haven-AOL supports two coexisting protocols. Uploaders choose which protocol a piece of content uses via the `version` field in gate metadata.
+Haven-AOL supports three coexisting protocols. Uploaders choose which protocol a piece of content uses via the `version` field in gate metadata. On Arkiv, the same number is stored as the `gate_type` attribute (`ATTR_UINT`): `1`=per-file, `3`=per-epoch, `4`=per-marketcap (`gate_type == gate.version`, numeric only, no `gate_version` key).
 
 ### v1 — Per-CID derivation
 

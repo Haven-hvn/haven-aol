@@ -26,6 +26,10 @@ Design notes mirror ``haven_aol.v3``:
   canister (`requestDecryptionKeyV4`); publishers/readers may preview with
   off-chain data but the gate decision is on-chain.
 * No I/O. All functions are pure.
+* Arkiv marker: entities carrying v4 gates store ``gate_type = 4``
+  (ATTR_UINT; 1=per-file, 3=per-epoch, 4=per-marketcap;
+  ``gate_type == gate.version``). The gate JSON ``version`` field itself
+  is unchanged by that rename.
 """
 
 from __future__ import annotations

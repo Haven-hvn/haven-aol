@@ -42,6 +42,10 @@ Design notes
 
 * No I/O. All functions are pure. Callers (haven-cli, haven-dapp)
   are responsible for HTTP/Candid transport and IBE primitives.
+* Arkiv marker: entities carrying v3 gates store ``gate_type = 3``
+  (ATTR_UINT; 1=per-file, 3=per-epoch, 4=per-marketcap;
+  ``gate_type == gate.version``). The gate JSON ``version`` field itself
+  is unchanged by that rename.
 """
 
 from __future__ import annotations

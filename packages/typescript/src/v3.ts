@@ -23,6 +23,9 @@
 //     v1 state. The two protocols share `Chain` and nothing else.
 //   • Symbol names are exact. The Python SDK validator pins these names; if
 //     any change here, the cross-stack integration suite (Sprint 6) breaks.
+//   • Arkiv marker: entities carrying v3 gates store `gate_type = 3`
+//     (ATTR_UINT; 1=per-file, 3=per-epoch, 4=per-marketcap;
+//     `gate_type == gate.version`). The gate JSON `version` field is unchanged.
 // =============================================================================
 
 import { keccak256, toUtf8Bytes, getBytes } from "ethers";
