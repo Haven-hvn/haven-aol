@@ -4,7 +4,7 @@
 
 This repository contains:
 
-- **Motoko canister** (`src/backend`) — balance-checked gates, VetKD-derived decryption keys, and **token-holding attestations**. Supports both protocol v1 (per-CID) and protocol v3 (corpus + epoch).
+- **Motoko canister** (`src/backend`) — balance-checked gates, VetKD-derived decryption keys, and **token-holding attestations**. Supports protocol v1 (per-CID), protocol v3 (corpus + epoch), and protocol v4 (market-cap-gated drip).
 - **TypeScript SDK** (`packages/typescript`) — decrypt-side client library (`haven-aol` on npm).
 - **Python SDK** (`packages/python`) — upload-side encryption and metadata (`haven-aol` on PyPI).
 - **secp256k1** (`packages/secp256k1`) — pure-Motoko ECDSA public key recovery, used by the canister for fast native `ecrecover`.
@@ -45,7 +45,7 @@ SHA-256("accessol_v3:" + chain + ":" + tokenAddress + ":" + threshold + ":" + ef
 
 ### v4 — Market-cap-gated drip derivation
 
-Progressive unlock for public DAO drops: a release is split into chunks, each pinned to its own unlock target `T_i` (whole USD). The canister refuses to derive a chunk key until the **live USD market cap** of the gate token reaches that chunk's target. Spec: `haven-v4-marketcap-drip.md`.
+Progressive unlock for public DAO drops: a release is split into chunks, each pinned to its own unlock target `T_i` (**whole reserve units** — whole ETH for native-reserve tokens). The canister refuses to derive a chunk key until the gate token's **bonding-curve market cap** (`totalSupply × priceForNextMint`, natively in the reserve token) reaches that chunk's target. Spec: `haven-v4-marketcap-drip.md`. Only mint.club V2 bonding-curve tokens can gate — by construction, not by allowlist.
 
 **Derivation preimage:**
 ```
@@ -54,9 +54,11 @@ SHA-256("accessol_v4:" + chain + ":" + tokenAddress + ":" + threshold + ":" + ef
 
 **VetKD context:** `accessol_v4` (distinct master public key from v1/v3)
 
-**Market-cap oracle:** Chainlink `AggregatorV3Interface.latestRoundData()` (8-decimal USD answer) × ERC20 `totalSupply()` ÷ `decimals()`. The oracle address is caller-supplied per request (`oracleAddress`) and stored by publishers in Arkiv as `oracle_address`.
+**Market-cap oracle:** the chain's mint.club V2 **Bond contract** — the curve is the ONLY price source, there is no Chainlink leg. `oracleAddress` must name the chain's Bond contract (case-insensitive, checked against a per-chain table with compiled-in defaults plus a controller-only `setBondConfig` override); anything else fails closed **before** touching the chain. `marketCapTarget` is whole reserve units, compared as `supplyRaw × priceNextMintWei / 10^tokenDecimals >= marketCapTarget × 10^reserveDecimals`. Cap is supply × *marginal* (next-mint) price — the bonding-curve convention, not a DEX-clearing valuation.
 
-**Market-cap burst cache:** cap snapshots are cached per `(chain, token)` for **300 seconds only** — deliberately NOT the 30-day approval-cache epoch. Crypto markets reprice continuously; a long-lived snapshot would make unlock decisions meaningless. A failed refresh never extends a stale snapshot's life. ERC20 `decimals()` IS cached permanently (immutable per contract). Answers older than 24h (`updatedAt`) are rejected — dead feeds fail closed.
+**Curve ceiling:** every token has a hard max — `maxSupply × finalPrice`. Rungs sealed above it can never unlock (see the dapp's seal-time curve-max guard). The curve is immutable after token creation, so the ceiling can only be raised by launching a new token with larger curve parameters.
+
+**Market-cap burst cache:** cap snapshots are cached per `(chain, token)` for **300 seconds only** — deliberately NOT the 30-day approval-cache epoch. Crypto markets reprice continuously; a long-lived snapshot would make unlock decisions meaningless. A failed refresh never extends a stale snapshot's life. ERC20 `decimals()` IS cached permanently (immutable per contract). Zero-price or failed curve reads fail closed.
 
 **Gate order:** future-epoch rejection → EIP-712 verify (signature commits to `(epoch, marketCapTarget)`) → holder gate (shared approval cache with v3) → market-cap gate → VetKD derive.
 
@@ -66,11 +68,13 @@ SHA-256("accessol_v4:" + chain + ":" + tokenAddress + ":" + threshold + ":" + ef
 
 | Method | Call type | Description |
 |--------|-----------|-------------|
-| `requestDecryptionKeyV4` | update | Gate proof → balance check (cached) → live market-cap check → VetKD v4 ciphertext |
+| `requestDecryptionKeyV4` | update | Gate proof → balance check (cached) → live curve-cap check → VetKD v4 ciphertext |
 | `getVetKDPublicKeyV4` | query | VetKD verification key for v4 (cached; distinct from v1/v3 keys) |
 | `warmupVetKDPublicKeyV4` | update | Populate v4 VetKD key cache |
-| `getMarketCapUsd` | update | Diagnostic: live whole-USD cap via `(chain, token, oracle)` |
+| `getMarketCap` | update | Diagnostic: live cap in **whole reserve units** via `(chain, token, oracleAddress)` |
 | `evictExpiredMarketCaps` | update | Controller-only janitor for the 5-minute cap burst cache |
+| `getBondConfig` | query | Effective Bond config (wrapped-native pair) for a chain |
+| `setBondConfig` | update | Controller-only Bond-config override per chain (heap-only: re-set after upgrades) |
 
 **EIP-712 type (v4):**
 ```
@@ -78,9 +82,9 @@ GateRequestV4(address evmAddress,bytes transportPublicKey,uint256 epoch,uint256 
 ```
 
 **Key differences from v3:**
-- Request carries `marketCapTarget` (whole USD) + `oracleAddress`; both participate in validation.
+- Request carries `marketCapTarget` (whole **reserve units**, not USD) + `oracleAddress`; both participate in validation (`oracleAddress` is pinned to the chain's Bond contract but is NOT a signed field).
 - The signature commits to the requested target — a reader cannot sign once at a low target and claim a higher-unlocked chunk.
-- New errors: `#MarketCapNotReached { required, actual }` (whole USD) and `#InvalidOracle`.
+- New errors: `#MarketCapNotReached { required, actual }` (whole reserve units) and `#InvalidOracle` (non-Bond oracle, unsupported non-native reserve, or failed curve read).
 - Derivation includes the target: two drip chunks with different targets always derive different keys, even at identical `(chain, token, threshold, epoch)`.
 
 ---
@@ -171,8 +175,8 @@ Attestation payload fields: `evmAddress`, `chain`, `tokenAddress`, `threshold`, 
 | `InvalidSignature` | EIP-712 signature verification failed |
 | `NonceAlreadyUsed` | Nonce was already consumed in this scope |
 | `InvalidEpoch` | (v3+) Epoch is in the future |
-| `MarketCapNotReached` | (v4 only) Live cap below the chunk's unlock target (whole USD) |
-| `InvalidOracle` | (v4 only) Malformed/stale oracle response or failed supply probe |
+| `MarketCapNotReached` | (v4 only) Live curve cap below the chunk's unlock target (whole reserve units) |
+| `InvalidOracle` | (v4 only) Non-Bond oracle, unsupported (non-native) reserve, or failed curve read |
 
 ---
 
@@ -195,7 +199,7 @@ TypeScript helpers: `fetchVerificationKey`, `fetchAttestationPublicKey` in [`pac
 
 ### Python SDK (`haven-aol` on PyPI)
 
-Upload-side encryption and metadata. Supports both v1 (`haven_aol.core`) and v3 (`haven_aol.v3`).
+Upload-side encryption and metadata. Supports v1 (`haven_aol.core`), v3 (`haven_aol.v3`), and v4 (`haven_aol.v4`, including the `is_bond_address` classifier).
 
 ```python
 from haven_aol.v3 import (
@@ -218,7 +222,7 @@ Tests: [`packages/python/tests/test_haven_aol_v3.py`](packages/python/tests/test
 
 ### TypeScript SDK (`haven-aol` on npm)
 
-Decrypt-side client library. Supports both v1 and v3.
+Decrypt-side client library. Supports v1, v3, and v4 (including the `isBondAddress` classifier and `BOND_ADDRESSES`).
 
 ```typescript
 import {
@@ -242,4 +246,4 @@ Tests: [`packages/typescript/src/test/v3.test.ts`](packages/typescript/src/test/
 
 ## Cross-stack verification
 
-v3 derivation is pinned by a **shared test fixture** — [`tests/fixtures/derivation-v3-vectors.json`](tests/fixtures/derivation-v3-vectors.json) — that all three implementations (Motoko canister, Python SDK, TypeScript SDK) must match byte-for-byte.
+v3 derivation is pinned by a **shared test fixture** — [`tests/fixtures/derivation-v3-vectors.json`](tests/fixtures/derivation-v3-vectors.json) — that all three implementations (Motoko canister, Python SDK, TypeScript SDK) must match byte-for-byte. v4 derivation is pinned the same way by [`tests/fixtures/derivation-v4-vectors.json`](tests/fixtures/derivation-v4-vectors.json).
