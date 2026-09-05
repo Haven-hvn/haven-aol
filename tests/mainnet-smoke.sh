@@ -173,4 +173,44 @@ icp canister call backend batchAttestHolding '(
 grep -q 'InvalidAddress' /tmp/m9.out || { echo "FAIL M9"; exit 1; }
 echo "OK"
 
+# ── Protocol v4 Bond mode (curve pricing — no signatures needed below) ──
+
+echo "== M10: getBondConfig EthMainnet returns the Bond default =="
+icp canister call backend getBondConfig '(variant { EthMainnet })' "${ENV_IC[@]}" -o candid | tee /tmp/m10.out
+grep -qi 'c5a076cad94176c2996b32d8466be1ce757faa27' /tmp/m10.out || { echo "FAIL M10: expected Bond address in EthMainnet config"; exit 1; }
+echo "OK"
+
+echo "== M11: getBondConfig BaseMainnet returns the Bond default =="
+icp canister call backend getBondConfig '(variant { BaseMainnet })' "${ENV_IC[@]}" -o candid | tee /tmp/m11.out
+grep -qi 'c5a076cad94176c2996b32d8466be1ce757faa27' /tmp/m11.out || { echo "FAIL M11: expected Bond address in BaseMainnet config"; exit 1; }
+echo "OK"
+
+echo "== M12: getBondConfig ArbitrumOne returns the CREATE2 Bond default =="
+icp canister call backend getBondConfig '(variant { ArbitrumOne })' "${ENV_IC[@]}" -o candid | tee /tmp/m12.out
+grep -qi 'c5a076cad94176c2996b32d8466be1ce757faa27' /tmp/m12.out || { echo "FAIL M12: expected Bond default on ArbitrumOne"; exit 1; }
+echo "OK"
+
+echo "== M12b: getBondConfig EthSepolia returns the TESTNET Bond (not CREATE2) =="
+icp canister call backend getBondConfig '(variant { EthSepolia })' "${ENV_IC[@]}" -o candid | tee /tmp/m12b.out
+grep -qi '8dce343a86aa950d539eee0e166affd0ef515c0c' /tmp/m12b.out || { echo "FAIL M12b: expected testnet Bond on EthSepolia"; exit 1; }
+grep -qi 'c5a076cad94176c2996b32d8466be1ce757faa27' /tmp/m12b.out && { echo "FAIL M12b: mainnet Bond must NOT appear on EthSepolia"; exit 1; }
+echo "OK"
+
+echo "== M13: getMarketCap Bond-mode fails closed on a bogus token =="
+icp canister call backend getMarketCap '(
+  variant { BaseMainnet },
+  "0x0000000000000000000000000000000000000000",
+  "0xc5a076cad94176c2996B32d8466Be1cE757FAa27"
+)' "${ENV_IC[@]}" -o candid | tee /tmp/m13.out
+grep -q 'err' /tmp/m13.out || { echo "FAIL M13: expected err for bogus Bond-mode token"; exit 1; }
+echo "OK"
+
+# NOTE (Bond-mode acceptance follow-ups — need real bonded tokens + signed
+# requestDecryptionKeyV4 calls, so they are not in this signature-less script):
+#   • bonded token with Bond-as-oracle opens past its rung
+#     (MarketCapNotReached below rung → ok above), rung in whole ETH;
+#   • wrong-reserve (non-native) token fails closed with #InvalidOracle.
+# Run those against a live fork with EIP-712-signed v4 requests before
+# advertising Bond mode per chain.
+
 echo "== All mainnet smoke checks passed =="

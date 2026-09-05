@@ -6,7 +6,6 @@
     "vetkdContext": "accessol_v4",
     "eip712TypeString": "GateRequestV4(address evmAddress,bytes transportPublicKey,uint256 epoch,uint256 marketCapTarget,uint256 nonce)",
     "eip712TypehashHex": "b9d5f143468a4d6e11bd1d2ff3eb546445b99a1e871adde2cd2c6008e2980afd",
-    "oraclePriceDecimals": 8,
     "marketCapCacheTtlSeconds": 300
   },
   "vectors": [

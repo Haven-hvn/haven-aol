@@ -67,19 +67,43 @@ export const EIP712_GATE_REQUEST_V4_TYPEHASH: Uint8Array = (() => {
 })();
 
 /**
- * Decimal places carried by standard Chainlink USD aggregators. The
- * canister computes/caches market caps scaled by exactly 10**this;
- * targets are expressed in whole USD on the wire.
- */
-export const ORACLE_PRICE_DECIMALS = 8 as const;
-
-/**
  * Canister-side market-cap burst-cache TTL in seconds. Deliberately SHORT
  * (five minutes), not an epoch: crypto markets reprice continuously and a
  * long-lived snapshot would make unlock decisions meaningless. Mirrors
  * MARKET_CAP_CACHE_TTL_SECONDS in src/backend/main.mo.
  */
 export const MARKET_CAP_CACHE_TTL_SECONDS = 300 as const;
+
+/**
+ * Chain-keyed mint.club V2 Bond contract addresses. Mainnet Bond is
+ * CREATE2-deployed (same address on every mainnet chain); EthSepolia
+ * uses the separate testnet deployment (from the @mint.club/v2-sdk BOND
+ * registry). The canister seeds all five chains from `BOND_ADDRESS_DEFAULT`
+ * / `BOND_ADDRESS_SEPOLIA` in `src/backend/main.mo`; other chains need
+ * `setBondConfig`.
+ *
+ * Mirrors the dapp's `BOND_ADDRESS_HINTS` (`haven-dapp/src/lib/v4/market-cap.ts`),
+ * keyed here by SDK `Chain` rather than Mint Club network key.
+ */
+export const BOND_ADDRESSES: Record<string, string> = {
+  EthMainnet: "0xc5a076cad94176c2996B32d8466Be1cE757FAa27",
+  BaseMainnet: "0xc5a076cad94176c2996B32d8466Be1cE757FAa27",
+  ArbitrumOne: "0xc5a076cad94176c2996B32d8466Be1cE757FAa27",
+  OptimismMainnet: "0xc5a076cad94176c2996B32d8466Be1cE757FAa27",
+  EthSepolia: "0x8dce343A86Aa950d539eeE0e166AFfd0Ef515C0c",
+};
+
+/**
+ * Bond-address check: does `addr` (any hex casing) name the Bond
+ * contract for `chainKey`? The canister requires the gate's
+ * `oracleAddress` to be the Bond — the curve is the only price source —
+ * so anything else fails closed. Unknown chains never match.
+ */
+export function isBondAddress(chainKey: string, addr: string): boolean {
+  const expected = BOND_ADDRESSES[chainKey];
+  if (typeof expected !== "string" || typeof addr !== "string") return false;
+  return addr.toLowerCase() === expected.toLowerCase();
+}
 
 // Internal pinned values.
 const V4_DOMAIN_TAG = "accessol_v4:";
@@ -132,9 +156,11 @@ function toHexPrefixed(bytes: Uint8Array): `0x${string}` {
  * `threshold`, `epoch`, `marketCapTarget`, `oracleAddress`, `encryptedAesKey`.
  *
  * • `threshold` is a decimal string (JSON-safe bigints).
- * • `epoch` / `marketCapTarget` are JSON numbers (whole USD for the target).
- * • `oracleAddress` is the Chainlink AggregatorV3 proxy for the token's
- *   USD price feed.
+ * • `epoch` / `marketCapTarget` are JSON numbers. `marketCapTarget` is
+ *   whole reserve units (whole ETH for v1 native-reserve tokens) — the
+ *   Bond curve is the only price source, so there is no USD leg.
+ * • `oracleAddress` must be the chain's Bond contract address (see
+ *   `isBondAddress`); anything else fails closed.
  */
 export interface GateMetadataV4Json {
   version: 4;

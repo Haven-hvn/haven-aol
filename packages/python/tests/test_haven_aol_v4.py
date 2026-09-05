@@ -25,15 +25,16 @@ import pytest
 
 from haven_aol.v3 import parse_gate_metadata
 from haven_aol.v4 import (
+    BOND_ADDRESSES,
     EIP712_GATE_REQUEST_V4_TYPE_STRING,
     EIP712_GATE_REQUEST_V4_TYPEHASH,
     GATE_METADATA_VERSION_V4,
     MARKET_CAP_CACHE_TTL_SECONDS,
-    ORACLE_PRICE_DECIMALS,
     build_eip712_gate_request_v4_typed_data,
     build_gate_metadata_v4,
     compute_derivation_input_v4,
     gate_metadata_v4_to_json,
+    is_bond_address,
     parse_gate_metadata_v4,
 )
 
@@ -64,12 +65,64 @@ class TestV4Constants:
 
     def test_market_cap_policy_constants_match_canister(self):
         constants = FIXTURE["constants"]
-        assert ORACLE_PRICE_DECIMALS == constants["oraclePriceDecimals"] == 8
         assert MARKET_CAP_CACHE_TTL_SECONDS == constants["marketCapCacheTtlSeconds"] == 300
 
     def test_domain_tag_in_fixture(self):
         assert FIXTURE["constants"]["domainTag"] == "accessol_v4:"
         assert FIXTURE["constants"]["vetkdContext"] == "accessol_v4"
+
+
+# ── Bond mode — address classification ──────────────────────────────
+
+
+BOND_ADDRESS = "0xc5a076cad94176c2996B32d8466Be1cE757FAa27"  # dapp-hint casing
+BOND_ADDRESS_SEPOLIA = "0x8dce343A86Aa950d539eeE0e166AFfd0Ef515C0c"  # testnet Bond
+CHAINLINK_FEED = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"  # ETH/USD mainnet
+
+
+class TestBondModeAddress:
+    def test_bond_address_on_all_five_chains(self):
+        assert is_bond_address("EthMainnet", BOND_ADDRESS) is True
+        assert is_bond_address("BaseMainnet", BOND_ADDRESS) is True
+        assert is_bond_address("ArbitrumOne", BOND_ADDRESS) is True
+        assert is_bond_address("OptimismMainnet", BOND_ADDRESS) is True
+        assert is_bond_address("EthSepolia", BOND_ADDRESS_SEPOLIA) is True
+        # Cross-check: mainnet Bond is NOT the Sepolia Bond and vice versa.
+        assert is_bond_address("EthSepolia", BOND_ADDRESS) is False
+        assert is_bond_address("BaseMainnet", BOND_ADDRESS_SEPOLIA) is False
+
+    def test_case_insensitive(self):
+        assert is_bond_address("BaseMainnet", BOND_ADDRESS.lower()) is True
+        assert is_bond_address("BaseMainnet", BOND_ADDRESS.upper()) is True
+
+    def test_rejects_non_bond_and_unknown_chains(self):
+        assert is_bond_address("BaseMainnet", CHAINLINK_FEED) is False
+        assert is_bond_address("BaseMainnet", "0x" + "00" * 20) is False
+        assert is_bond_address("NoSuchChain", BOND_ADDRESS) is False
+        assert is_bond_address("BaseMainnet", "not-an-address") is False
+
+    def test_bond_addresses_parity_with_canister_defaults(self):
+        # Per-chain parity: mainnets track BOND_ADDRESS_DEFAULT, EthSepolia
+        # tracks BOND_ADDRESS_SEPOLIA in src/backend/main.mo (lowercase
+        # compare — the canister lowercases, so EIP-55 casing is not
+        # load-bearing).
+        import re
+
+        main_mo = (REPO_ROOT / "src" / "backend" / "main.mo").read_text(encoding="utf-8")
+        default = re.search(r'BOND_ADDRESS_DEFAULT\s*:\s*Text\s*=\s*"([^"]+)"', main_mo)
+        sepolia = re.search(r'BOND_ADDRESS_SEPOLIA\s*:\s*Text\s*=\s*"([^"]+)"', main_mo)
+        assert default, "BOND_ADDRESS_DEFAULT not found in src/backend/main.mo"
+        assert sepolia, "BOND_ADDRESS_SEPOLIA not found in src/backend/main.mo"
+        expected = {
+            "EthMainnet": default.group(1),
+            "BaseMainnet": default.group(1),
+            "ArbitrumOne": default.group(1),
+            "OptimismMainnet": default.group(1),
+            "EthSepolia": sepolia.group(1),
+        }
+        assert sorted(BOND_ADDRESSES) == sorted(expected)
+        for chain, addr in expected.items():
+            assert BOND_ADDRESSES[chain].lower() == addr.lower(), f"BOND_ADDRESSES[{chain}] drifted"
 
 
 # ── Derivation input (fixture-driven) ───────────────────────────────

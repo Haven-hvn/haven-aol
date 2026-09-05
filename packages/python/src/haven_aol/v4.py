@@ -7,8 +7,9 @@ Market-cap-gated progressive unlock ("drip") per
   * ``GATE_METADATA_VERSION_V4``           — JSON ``version`` discriminator
   * ``EIP712_GATE_REQUEST_V4_TYPE_STRING`` — exact EIP-712 type string
   * ``EIP712_GATE_REQUEST_V4_TYPEHASH``    — keccak256 of the type string
-  * ``ORACLE_PRICE_DECIMALS``              — Chainlink USD feed scale (8)
   * ``MARKET_CAP_CACHE_TTL_SECONDS``       — canister burst-cache TTL (300)
+  * ``BOND_ADDRESSES``                     — chain-keyed Bond contracts
+  * ``is_bond_address``                      — Bond-address check
   * ``compute_derivation_input_v4``        — 32-byte SHA-256 derivation
   * ``build_gate_metadata_v4``             — gate-metadata JSON builder
   * ``parse_gate_metadata_v4``             — v4-only parser (None on any
@@ -64,15 +65,42 @@ EIP712_GATE_REQUEST_V4_TYPEHASH: bytes = bytes.fromhex(
     "b9d5f143468a4d6e11bd1d2ff3eb546445b99a1e871adde2cd2c6008e2980afd"
 )
 
-#: Decimal places carried by standard Chainlink USD aggregators. The
-#: canister computes and caches market caps scaled by exactly 10**this.
-ORACLE_PRICE_DECIMALS: int = 8
-
 #: Canister-side market-cap burst-cache TTL (seconds). Deliberately short:
 #: crypto markets reprice continuously, so a long-lived snapshot would make
 #: unlock decisions meaningless. Mirrors MARKET_CAP_CACHE_TTL_SECONDS in
 #: src/backend/main.mo.
 MARKET_CAP_CACHE_TTL_SECONDS: int = 300
+
+#: Chain-keyed mint.club V2 Bond contract addresses. Mainnet Bond is
+#: CREATE2-deployed (same address on every mainnet chain); EthSepolia uses
+#: the separate testnet deployment (from the @mint.club/v2-sdk BOND
+#: registry). The canister seeds all five chains from
+#: ``BOND_ADDRESS_DEFAULT`` / ``BOND_ADDRESS_SEPOLIA`` in
+#: ``src/backend/main.mo``; further chains need ``setBondConfig``.
+#: Mirrors the dapp's ``BOND_ADDRESS_HINTS``
+#: (``haven-dapp/src/lib/v4/market-cap.ts``), keyed here by SDK chain
+#: name rather than Mint Club network key.
+BOND_ADDRESSES: dict = {
+    "EthMainnet": "0xc5a076cad94176c2996B32d8466Be1cE757FAa27",
+    "BaseMainnet": "0xc5a076cad94176c2996B32d8466Be1cE757FAa27",
+    "ArbitrumOne": "0xc5a076cad94176c2996B32d8466Be1cE757FAa27",
+    "OptimismMainnet": "0xc5a076cad94176c2996B32d8466Be1cE757FAa27",
+    "EthSepolia": "0x8dce343A86Aa950d539eeE0e166AFfd0Ef515C0c",
+}
+
+
+def is_bond_address(chain: str, address: str) -> bool:
+    """Bond-address check.
+
+    Returns True iff ``address`` (any hex casing) names the Bond contract
+    for ``chain``. The canister requires the gate's ``oracle_address`` to
+    be the Bond — the curve is the only price source — so anything else
+    fails closed. Unknown chains never match.
+    """
+    expected = BOND_ADDRESSES.get(chain)
+    if not isinstance(expected, str) or not isinstance(address, str):
+        return False
+    return address.lower() == expected.lower()
 
 VALID_CHAINS = frozenset({
     "EthMainnet",
@@ -167,8 +195,10 @@ def build_gate_metadata_v4(
 
     Threshold-zero mitigation matches v3: ``threshold == 0`` requires
     ``epoch == 0`` (canister collapse rule). ``market_cap_target`` is whole
-    USD; ``oracle_address`` is the Chainlink AggregatorV3 proxy for the
-    token's USD price feed.
+    reserve units (whole ETH for v1 native-reserve tokens) — the Bond curve
+    is the only price source, so there is no USD leg.
+    ``oracle_address`` must name the chain's Bond contract (see
+    ``is_bond_address``); anything else fails closed.
     """
     if not isinstance(cid, str) or not cid:
         raise ValueError("CID must be a non-empty string")
@@ -377,8 +407,9 @@ __all__ = [
     "GATE_METADATA_VERSION_V4",
     "EIP712_GATE_REQUEST_V4_TYPE_STRING",
     "EIP712_GATE_REQUEST_V4_TYPEHASH",
-    "ORACLE_PRICE_DECIMALS",
     "MARKET_CAP_CACHE_TTL_SECONDS",
+    "BOND_ADDRESSES",
+    "is_bond_address",
     "compute_derivation_input_v4",
     "build_gate_metadata_v4",
     "gate_metadata_v4_to_json",

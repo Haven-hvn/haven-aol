@@ -268,18 +268,134 @@ persistent actor {
   // the approval cache: crypto markets reprice continuously and a stale
   // cap would make unlock decisions meaningless (an entry could read
   // "unlocked" for weeks after a crash). Five minutes bounds worst-case
-  // staleness well inside typical Chainlink USD-feed heartbeat cadence
-  // while still deduplicating bursts of readers hitting the same drip.
+  // staleness while still deduplicating bursts of readers hitting the
+  // same drip.
   let MARKET_CAP_CACHE_TTL_SECONDS : Nat = 300;
-  // Chainlink USD aggregators quote with 8 decimals (USD/ETH, …).
-  // Market caps are computed and cached in this fixed scale:
-  //   capUsd8 = totalSupplyRaw * priceAnswer / 10^tokenDecimals
-  // so comparing against `marketCapTarget` (whole USD) is done as
-  //   capUsd8 >= marketCapTarget * 10^8.
-  let ORACLE_PRICE_DECIMALS : Nat = 8;
-  // Reject oracle answers whose updatedAt is older than this — a dead or
-  // abandoned feed must fail closed instead of serving ancient prices.
-  let MAX_ORACLE_STALENESS_SECONDS : Int = 86_400;
+
+  // ── Bond-curve config (Protocol v4, mint.club curve pricing) ────────
+  // v4 prices `totalSupply × priceForNextMint` (supply × MARGINAL
+  // next-mint price — the bonding-curve convention, identical to the dapp
+  // preview) natively in the reserve token. The curve is the ONLY price
+  // source: there is no Chainlink leg, per-token or otherwise.
+  // `marketCapTarget` means WHOLE RESERVE UNITS (whole ETH for v1
+  // native-reserve tokens), compared as
+  //   supplyRaw × priceNextMintWei / 10^tokenDecimals
+  //     >= marketCapTarget × 10^reserveDecimals.
+  // It is not a DEX-clearing valuation; preview and enforcement agree by
+  // construction. See docs/planning/v4-bond-price-source.md.
+  //
+  // The mint.club V2 Bond is CREATE2-deployed; confirm BOND_ADDRESS_DEFAULT
+  // is identical on every mainnet chain in `chainToRpcServices` before
+  // deploy, and record the check in the deploy log. EthSepolia is the
+  // exception: testnet Bond lives at BOND_ADDRESS_SEPOLIA (from the
+  // @mint.club/v2-sdk BOND registry, not CREATE2).
+  let BOND_ADDRESS_DEFAULT : Text = "0xc5a076cad94176c2996B32d8466Be1cE757FAa27";
+  let BOND_ADDRESS_SEPOLIA : Text = "0x8dce343A86Aa950d539eeE0e166AFfd0Ef515C0c";
+  public type BondConfig = {
+    bond : Text;
+    wrappedNative : Text;
+  };
+  // Heap-only table (NOT stable state), following the `marketCapCache`
+  // pattern: entries must be re-set after every canister upgrade.
+  // Keyed by `bondConfigKey` (the chain half of `marketCapCacheKey`).
+  let bondConfig = Map.empty<Text, BondConfig>();
+
+  func bondConfigKey(chain : Chain) : Text {
+    chainToText(chain);
+  };
+
+  // Resolve the Bond config for a chain: an explicit admin entry wins;
+  // all five `chainToRpcServices` chains fall back to compiled-in defaults
+  // so a fresh deploy prices curve tokens without a controller round-trip.
+  // (An unconfigured chain is unreachable — every Chain variant below has
+  // a default. `setBondConfig` still overrides per chain, e.g. on Bond
+  // upgrades.)
+  func getBondConfigInternal(chain : Chain) : ?BondConfig {
+    let key = bondConfigKey(chain);
+    switch (Map.get(bondConfig, Text.compare, key)) {
+      case (?cfg) { ?cfg };
+      case null {
+        switch (chain) {
+          case (#EthMainnet) {
+            ?{
+              bond = BOND_ADDRESS_DEFAULT;
+              // WETH (wrapped native) on Ethereum mainnet.
+              wrappedNative = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+            };
+          };
+          case (#BaseMainnet) {
+            ?{
+              bond = BOND_ADDRESS_DEFAULT;
+              // WETH (wrapped native) on Base.
+              wrappedNative = "0x4200000000000000000000000000000000000006";
+            };
+          };
+          case (#ArbitrumOne) {
+            ?{
+              bond = BOND_ADDRESS_DEFAULT;
+              // WETH (wrapped native) on Arbitrum One.
+              wrappedNative = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1";
+            };
+          };
+          case (#OptimismMainnet) {
+            ?{
+              bond = BOND_ADDRESS_DEFAULT;
+              // WETH (wrapped native) on OP Mainnet.
+              wrappedNative = "0x4200000000000000000000000000000000000006";
+            };
+          };
+          case (#EthSepolia) {
+            ?{
+              // Testnet Bond — NOT the CREATE2 mainnet address (see above).
+              bond = BOND_ADDRESS_SEPOLIA;
+              // WETH (wrapped native) on Sepolia.
+              wrappedNative = "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14";
+            };
+          };
+        };
+      };
+    };
+  };
+
+  // Oracle pin: `oracleAddress` must name the chain's Bond contract
+  // (case-insensitive). No Candid or EIP-712 change: `oracleAddress` stays
+  // `text` and is not a signed field, and `marketCapTarget` stays `nat`
+  // in whole reserve units — so gates sealed with the Bond address keep
+  // working with no re-publish, while anything else fails closed.
+  func isBondOracle(chain : Chain, oracleAddress : Text) : Bool {
+    switch (getBondConfigInternal(chain)) {
+      case (?cfg) {
+        toLowerHex(stripHexPrefix(oracleAddress)) == toLowerHex(stripHexPrefix(cfg.bond));
+      };
+      case null { false };
+    };
+  };
+
+  /// Controller-gated setter for the per-chain Bond config. Heap-only:
+  /// entries must be re-set after every canister upgrade (see above).
+  /// Traps on non-controller callers and on malformed addresses.
+  public shared (msg) func setBondConfig(chain : Chain, cfg : BondConfig) : async () {
+    if (not Principal.isController(msg.caller)) {
+      Runtime.trap("setBondConfig: caller is not a controller");
+    };
+    switch (validateAddress(cfg.bond, "bond")) {
+      case (?err) { Runtime.trap("setBondConfig: invalid bond address: " # debug_show err) };
+      case null {};
+    };
+    switch (validateAddress(cfg.wrappedNative, "wrappedNative")) {
+      case (?err) { Runtime.trap("setBondConfig: invalid wrappedNative address: " # debug_show err) };
+      case null {};
+    };
+    Map.add(bondConfig, Text.compare, bondConfigKey(chain), cfg);
+  };
+
+  /// Operator query: the effective Bond config for a chain (explicit
+  /// admin entry, else the compiled-in default — every Chain variant has
+  /// one, so null is unreachable today and reserved for future chains).
+  public query func getBondConfig(chain : Chain) : async ?BondConfig {
+    getBondConfigInternal(chain);
+  };
+
   let usedNonces = Map.empty<Text, Bool>();
   // ── Approval cache (Protocol v3 only) ──────────────────────────────
   // Key:   text join `chain|tokenAddress_lower|threshold|epoch|evmAddress_lower`
@@ -306,12 +422,14 @@ persistent actor {
   // holders after a pump until the next epoch). The cache therefore
   // exists ONLY to absorb read bursts:
   //
-  //   marketCapCache : chain|token_lower -> { capUsd8, fetchedAt }
+  //   marketCapCache : chain|token_lower -> { capScaled, scaleDecimals, fetchedAt }
   //     TTL = MARKET_CAP_CACHE_TTL_SECONDS (300s). Worst-case staleness
-  //     is bounded to five minutes — well inside typical Chainlink USD
-  //     feed heartbeat cadence. On expiry the next request refetches
+  //     is bounded to five minutes. On expiry the next request refetches
   //     price + totalSupply; a failed refresh does NOT extend the old
   //     entry's life.
+  //     Caps are reserve-wei (`capScaled`) with the reserve's decimals
+  //     (`scaleDecimals`) — the single pricing path is the Bond curve, so
+  //     there is exactly one unit in this cache and nothing to namespace.
   //
   //   tokenDecimalsCache : chain|token_lower -> Nat
   //     Permanent. ERC20 `decimals()` is immutable per deployed contract,
@@ -321,9 +439,12 @@ persistent actor {
   // Both maps live only inside the actor heap (persistent actor ⇒ whole
   // heap survives upgrades), matching the `approvedHolders` lifecycle.
   type MarketCapCacheEntry = {
-    // Live USD market cap scaled by 10^8 (oracle price decimals).
-    capUsd8 : Nat;
-    // UNIX seconds when this snapshot was fetched from the oracle+chain.
+    // Live cap in reserve-wei. Divide by 10^scaleDecimals for whole
+    // reserve units (whole ETH for v1 native-reserve tokens).
+    capScaled : Nat;
+    // Scale of capScaled: the reserve token's decimals (probed, cached).
+    scaleDecimals : Nat;
+    // UNIX seconds when this snapshot was fetched from the chain.
     fetchedAt : Int;
   };
   let marketCapCache = Map.empty<Text, MarketCapCacheEntry>();
@@ -1156,12 +1277,12 @@ persistent actor {
     #NonceAlreadyUsed;
     // Protocol v3: req.epoch refers to a future epoch (> currentEpoch()).
     #InvalidEpoch;
-    // Protocol v4: live market cap (whole USD) is below the requested
-    // chunk's unlock target. `required` = marketCapTarget, `actual` =
-    // current market cap, both in whole USD.
+    // Protocol v4: live market cap is below the requested chunk's unlock
+    // target. `required` = marketCapTarget, `actual` = current market cap,
+    // both in whole reserve units.
     #MarketCapNotReached : { required : Nat; actual : Nat };
-    // Protocol v4: malformed oracle response, stale answer, or failed
-    // supply/decimals probe.
+    // Protocol v4: non-Bond oracle, unsupported reserve, or failed
+    // supply/decimals/curve probe.
     #InvalidOracle : Text;
   };
 
@@ -1236,19 +1357,23 @@ persistent actor {
   // Market-cap-gated drip request (spec: haven-v4-marketcap-drip).
   // Derivation keys on (chain, tokenAddress, threshold, effectiveEpoch,
   // marketCapTarget); the canister refuses to derive until the live
-  // USD market cap of `tokenAddress` (via `oracleAddress`, a Chainlink
-  // aggregator) reaches `marketCapTarget` — whole USD units.
+  // reserve-native market cap of `tokenAddress` reaches `marketCapTarget`
+  // (whole reserve units — whole ETH for v1 native-reserve tokens).
+  // `oracleAddress` must name the chain's Bond contract (see
+  // `isBondOracle`): the curve is the only price source.
   public type GateRequestV4 = {
     chain : Chain;
     tokenAddress : Text;
     threshold : Nat;
     epoch : Nat;
-    // Unlock target in WHOLE USD. The canister compares against the
-    // live cap scaled by ORACLE_PRICE_DECIMALS internally.
+    // Unlock target in WHOLE RESERVE UNITS (whole ETH for v1
+    // native-reserve tokens). The canister compares against the live cap
+    // scaled to ×10^reserveDecimals internally.
     marketCapTarget : Nat;
-    // Chainlink AggregatorV3Interface proxy address for the token's
-    // USD price feed. Caller-supplied (stored in Arkiv as
-    // `oracle_address` by the publisher); validated as an address.
+    // The chain's Bond contract address — the curve priced by Step D.
+    // Caller-supplied (stored in Arkiv as `oracle_address` by the
+    // publisher); validated as an address AND pinned to the configured
+    // Bond (see `isBondOracle`), so a non-Bond value fails closed.
     oracleAddress : Text;
     evmAddress : Text;
     transportPublicKey : Blob;
@@ -1595,15 +1720,21 @@ persistent actor {
     chainToText(chain) # "|" # toLowerHex(stripHexPrefix(tokenAddress));
   };
 
-  /// Fresh (non-expired) cap for `(chain, token)` if one exists.
+  // Decimals are independent of pricing, so the permanent decimals cache
+  // keeps its own key rather than sharing the cap key.
+  func tokenDecimalsCacheKey(chain : Chain, tokenAddress : Text) : Text {
+    chainToText(chain) # "|" # toLowerHex(stripHexPrefix(tokenAddress));
+  };
+
+  /// Fresh (non-expired) cap entry for `(chain, token)` if one exists.
   /// Expired rows are lazily deleted on read, mirroring `isApprovedHolder`.
-  func getCachedMarketCap(chain : Chain, tokenAddress : Text) : ?Nat {
+  func getCachedMarketCap(chain : Chain, tokenAddress : Text) : ?MarketCapCacheEntry {
     let key = marketCapCacheKey(chain, tokenAddress);
     switch (Map.get(marketCapCache, Text.compare, key)) {
       case (?entry) {
         let nowSec = Time.now() / 1_000_000_000;
         if (nowSec - entry.fetchedAt <= MARKET_CAP_CACHE_TTL_SECONDS) {
-          ?entry.capUsd8;
+          ?entry;
         } else {
           ignore Map.delete(marketCapCache, Text.compare, key);
           null;
@@ -1613,25 +1744,29 @@ persistent actor {
     };
   };
 
-  func recordMarketCap(chain : Chain, tokenAddress : Text, capUsd8 : Nat) {
+  func recordMarketCap(chain : Chain, tokenAddress : Text, capScaled : Nat, scaleDecimals : Nat) {
     let key = marketCapCacheKey(chain, tokenAddress);
     Map.add(
       marketCapCache,
       Text.compare,
       key,
-      { capUsd8 = capUsd8; fetchedAt = Time.now() / 1_000_000_000 },
+      { capScaled = capScaled; scaleDecimals = scaleDecimals; fetchedAt = Time.now() / 1_000_000_000 },
     );
   };
 
   // ── Oracle + ERC20 reads (Protocol v4) ─────────────────────────────
 
-  // Selector constants:
-  //   latestRoundData() = keccak("latestRoundData()")[0:4]  = 0xfeaf3996
-  //   totalSupply()     = keccak("totalSupply()")[0:4]      = 0x18160ddd
-  //   decimals()        = keccak("decimals()")[0:4]         = 0x313ce567
-  let SELECTOR_LATEST_ROUND_DATA : Text = "feaf3996";
+  // Selector constants (each = keccak(canonicalSignature)[0:4]):
+  //   totalSupply()          = 0x18160ddd
+  //   decimals()             = 0x313ce567
+  //   priceForNextMint(addr) = 0x840d885d (mint.club V2 Bond view)
+  //   tokenBond(addr)        = 0xd9fe0eae (mint.club V2 Bond view)
+  // Bond selectors computed via `viem.toFunctionSelector`; re-verify both
+  // against a live node pre-deploy (acceptance criterion in the design spec).
   let SELECTOR_TOTAL_SUPPLY : Text = "18160ddd";
   let SELECTOR_DECIMALS : Text = "313ce567";
+  let SELECTOR_PRICE_FOR_NEXT_MINT : Text = "840d885d";
+  let SELECTOR_TOKEN_BOND : Text = "d9fe0eae";
 
   // Extract the i-th 32-byte word from an ABI-encoded return payload
   // ("0x"-prefixed hex). Returns null when the payload is truncated.
@@ -1709,7 +1844,7 @@ persistent actor {
 
   // Token decimals with permanent caching (immutable per contract).
   func fetchTokenDecimals(chain : Chain, tokenAddress : Text) : async Result.Result<Nat, Text> {
-    let key = marketCapCacheKey(chain, tokenAddress);
+    let key = tokenDecimalsCacheKey(chain, tokenAddress);
     switch (Map.get(tokenDecimalsCache, Text.compare, key)) {
       case (?d) { return #ok(d) };
       case null {};
@@ -1743,64 +1878,103 @@ persistent actor {
     };
   };
 
-  // Chainlink AggregatorV3Interface.latestRoundData():
-  // returns (uint80 roundId, int256 answer, uint256 startedAt,
-  //          uint256 updatedAt, uint80 answeredInRound)
-  // We validate word[1] (answer > 0) and word[3] (updatedAt freshness).
-  func fetchOraclePriceUsd8(
+  // ── Bond-curve reads (Protocol v4) ─────────────────────────────────
+  // Every probe funnels through `ethCallRaw` + `abiWordAt` — no hand-rolled
+  // ABI decoder. Only the load-bearing words are decoded.
+
+  // `priceForNextMint(token)` on the Bond → uint128 marginal price in
+  // reserve-wei (word 0). Zero is fail-closed: a zero next-mint price must
+  // never unlock.
+  func fetchBondPriceForNextMint(
     chain : Chain,
-    oracleAddress : Text,
+    bond : Text,
+    token : Text,
   ) : async Result.Result<Nat, Text> {
+    let ?token32 = encodeAddress32(token) else return #err("priceForNextMint: invalid token address");
     let hex = switch (
-      await ethCallRaw(chain, oracleAddress, "0x" # SELECTOR_LATEST_ROUND_DATA)
+      await ethCallRaw(chain, bond, "0x" # SELECTOR_PRICE_FOR_NEXT_MINT # token32)
     ) {
       case (#ok(h)) { h };
-      case (#err(msg)) { return #err("latestRoundData() call failed: " # msg) };
+      case (#err(msg)) { return #err("priceForNextMint() call failed: " # msg) };
     };
-
-    // Negative answers encode as 2^256-x; any value above the signed
-    // positive range would be nonsense for a USD feed. Bound-check by
-    // requiring the top byte to be zero (price << 2^248 in practice).
-    let answer = switch (abiWordAt(hex, 1)) {
-      case (?a) { a };
-      case null { return #err("latestRoundData(): malformed answer word") };
+    switch (abiWordAt(hex, 0)) {
+      case (?price) {
+        if (price == 0) {
+          return #err("priceForNextMint(): zero next-mint price");
+        };
+        #ok(price);
+      };
+      case null { #err("priceForNextMint(): malformed ABI payload") };
     };
-    if (answer == 0 or answer >= (2 ** 248)) {
-      return #err("latestRoundData(): non-positive price answer");
-    };
-
-    let updatedAt = switch (abiWordAt(hex, 3)) {
-      case (?u) { u };
-      case null { return #err("latestRoundData(): malformed updatedAt word") };
-    };
-    let nowSec : Int = Time.now() / 1_000_000_000;
-    let updatedAtInt : Int = updatedAt;
-    if (updatedAtInt > nowSec + 300) {
-      return #err("latestRoundData(): updatedAt in the future");
-    };
-    if (nowSec - updatedAtInt > MAX_ORACLE_STALENESS_SECONDS) {
-      return #err("latestRoundData(): stale oracle answer");
-    };
-
-    #ok(answer);
   };
 
-  /// Live USD market cap of `tokenAddress`, scaled by ORACLE_PRICE_DECIMALS:
-  ///   capUsd8 = totalSupplyRaw * priceAnswer / 10^tokenDecimals
-  /// Uses the short-TTL burst cache; on miss performs up to three eth_calls
-  /// (price via `oracleAddress`, totalSupply + decimals via the token).
-  public func getMarketCapUsd(
+  // `tokenBond(token)` on the Bond → static 6-word tuple
+  //   (creator, mintRoyalty, burnRoyalty, createdAt, reserveToken,
+  //    reserveBalance)
+  // per the Bond ABI. All members are statically-sized, so the tuple is a
+  // flat word sequence and index 4 is the reserve token with no
+  // offset-chasing. Returns the reserve as a `0x`-prefixed lowercase
+  // address; rejects non-zero address padding as malformed.
+  func fetchBondReserve(
+    chain : Chain,
+    bond : Text,
+    token : Text,
+  ) : async Result.Result<Text, Text> {
+    let ?token32 = encodeAddress32(token) else return #err("tokenBond: invalid token address");
+    let hex = switch (
+      await ethCallRaw(chain, bond, "0x" # SELECTOR_TOKEN_BOND # token32)
+    ) {
+      case (#ok(h)) { h };
+      case (#err(msg)) { return #err("tokenBond() call failed: " # msg) };
+    };
+    switch (abiWordAt(hex, 4)) {
+      case (?w) {
+        if (w >= 2 ** 160) {
+          return #err("tokenBond(): malformed reserve word (non-zero address padding)");
+        };
+        #ok("0x" # natToFixedHex(w, 20));
+      };
+      case null { #err("tokenBond(): malformed ABI payload") };
+    };
+  };
+
+  // Market cap, natively in reserve units (no USD anywhere):
+  //   capReserveWei = totalSupplyRaw × priceNextMintWei / 10^tokenDecimals
+  // compared against `marketCapTarget × 10^reserveDecimals` by the caller.
+  // `reserveDecimals` comes from a live `decimals()` probe on the reserve
+  // token — asserted via the probe and permanently cached through the
+  // existing `tokenDecimalsCache`, never assumed (v1 wrapped-native
+  // reserves are 18 decimals, but the probe says so).
+  // v1 scope: native-reserve tokens only; any other reserve fails closed
+  // with `#InvalidOracle("unsupported reserve …")`.
+  // Warm-miss RPC budget: tokenBond probe + totalSupply + priceForNextMint
+  // (both decimals legs permanently cached) — and zero oracle failure modes.
+  func getMarketCapInternal(
     chain : Chain,
     tokenAddress : Text,
-    oracleAddress : Text,
-  ) : async Result.Result<Nat, Text> {
-    // Whole-USD convenience view on top of the scaled cache value.
-    switch (getCachedMarketCap(chain, tokenAddress)) {
-      case (?capUsd8) { return #ok(capUsd8 / (10 ** ORACLE_PRICE_DECIMALS)) };
-      case null {};
+  ) : async Result.Result<{ capReserveWei : Nat; reserveDecimals : Nat }, Text> {
+    let cfg = switch (getBondConfigInternal(chain)) {
+      case (?c) { c };
+      case null {
+        return #err("bond mode not configured for chain " # chainToText(chain));
+      };
     };
-
-    let decimals = switch (await fetchTokenDecimals(chain, tokenAddress)) {
+    let reserve = switch (await fetchBondReserve(chain, cfg.bond, tokenAddress)) {
+      case (#ok(r)) { r };
+      case (#err(msg)) { return #err(msg) };
+    };
+    if (
+      toLowerHex(stripHexPrefix(reserve)) != toLowerHex(stripHexPrefix(cfg.wrappedNative))
+    ) {
+      return #err(
+        "unsupported reserve " # reserve # " (only native-reserve tokens, want " # cfg.wrappedNative # ")"
+      );
+    };
+    let tokenDecimals = switch (await fetchTokenDecimals(chain, tokenAddress)) {
+      case (#ok(d)) { d };
+      case (#err(msg)) { return #err(msg) };
+    };
+    let reserveDecimals = switch (await fetchTokenDecimals(chain, reserve)) {
       case (#ok(d)) { d };
       case (#err(msg)) { return #err(msg) };
     };
@@ -1808,14 +1982,43 @@ persistent actor {
       case (#ok(s)) { s };
       case (#err(msg)) { return #err(msg) };
     };
-    let priceUsd8 = switch (await fetchOraclePriceUsd8(chain, oracleAddress)) {
+    let priceNextMintWei = switch (
+      await fetchBondPriceForNextMint(chain, cfg.bond, tokenAddress)
+    ) {
       case (#ok(p)) { p };
       case (#err(msg)) { return #err(msg) };
     };
+    let capReserveWei = supplyRaw * priceNextMintWei / (10 ** tokenDecimals);
+    recordMarketCap(chain, tokenAddress, capReserveWei, reserveDecimals);
+    #ok({ capReserveWei = capReserveWei; reserveDecimals = reserveDecimals });
+  };
 
-    let capUsd8 = supplyRaw * priceUsd8 / (10 ** decimals);
-    recordMarketCap(chain, tokenAddress, capUsd8);
-    #ok(capUsd8 / (10 ** ORACLE_PRICE_DECIMALS));
+  /// Live market cap of `tokenAddress` in WHOLE RESERVE UNITS (whole ETH
+  /// for v1 native-reserve tokens): supply × marginal curve price, natively
+  /// in the reserve. `oracleAddress` must name the chain's Bond contract
+  /// (see `isBondOracle`) — anything else fails closed without touching
+  /// the chain.
+  /// Diagnostic/preview helper — the gate endpoint performs its own
+  /// (burst-cached) fetch; callers should not round-trip through this
+  /// before every decrypt.
+  public func getMarketCap(
+    chain : Chain,
+    tokenAddress : Text,
+    oracleAddress : Text,
+  ) : async Result.Result<Nat, Text> {
+    if (not isBondOracle(chain, oracleAddress)) {
+      return #err("oracleAddress must be the chain's Bond contract " # chainToText(chain));
+    };
+    // Whole-unit convenience view on top of the scaled cache value.
+    switch (getCachedMarketCap(chain, tokenAddress)) {
+      case (?entry) { return #ok(entry.capScaled / (10 ** entry.scaleDecimals)) };
+      case null {};
+    };
+
+    switch (await getMarketCapInternal(chain, tokenAddress)) {
+      case (#ok(r)) { return #ok(r.capReserveWei / (10 ** r.reserveDecimals)) };
+      case (#err(msg)) { return #err(msg) };
+    };
   };
 
 
@@ -2089,10 +2292,12 @@ persistent actor {
   //           reuse a low-target signature to claim a higher chunk
   //   Step C  holder gate: caller must hold `threshold` of `tokenAddress`
   //           (approval cache → eth_call fallthrough, shared with v3)
-  //   Step D  market-cap gate: live cap via Chainlink `latestRoundData`
-  //           + ERC20 `totalSupply`/`decimals`, burst-cached for
-  //           MARKET_CAP_CACHE_TTL_SECONDS; rejects with
-  //           #MarketCapNotReached until cap >= target
+  //   Step D  market-cap gate: live reserve-native cap via the Bond
+  //           curve (`priceForNextMint` + `totalSupply`/`decimals`,
+  //           burst-cached for MARKET_CAP_CACHE_TTL_SECONDS); rejects with
+  //           #MarketCapNotReached until cap >= target. `oracleAddress`
+  //           must name the chain's Bond contract — anything else fails
+  //           closed before touching the chain.
   //   Step E  VetKD derivation over "accessol_v4" context with the
   //           target baked into the preimage
   public func requestDecryptionKeyV4(req : GateRequestV4) : async GateResult {
@@ -2176,26 +2381,40 @@ persistent actor {
       };
     };
 
-    // ── Step D: Market-cap gate (burst-cached oracle read) ──
-    // targetUsd8 puts the publisher's whole-USD target in the same fixed
-    // scale as the cached cap so the comparison is pure Nat math. The
-    // delete-then-fetch ordering guarantees a failed refresh cannot
-    // extend the life of a stale snapshot.
-    let targetUsd8 : Nat = req.marketCapTarget * (10 ** ORACLE_PRICE_DECIMALS);
-    let capUsd8 = switch (getCachedMarketCap(req.chain, req.tokenAddress)) {
+    // ── Step D: Market-cap gate (burst-cached curve read) ──
+    // The publisher's whole-reserve-unit target is put in the cached cap's
+    // own scale so the comparison is pure Nat math:
+    // whole reserve units × 10^reserveDecimals. The delete-then-fetch
+    // ordering guarantees a failed refresh cannot extend the life of a
+    // stale snapshot.
+    // `oracleAddress` must name the chain's Bond contract (see
+    // `isBondOracle`): the curve is the ONLY price source, so anything
+    // else fails closed before touching the chain.
+    if (not isBondOracle(req.chain, req.oracleAddress)) {
+      return #err(#InvalidOracle("oracleAddress must be the chain's Bond contract"));
+    };
+    let entry = switch (getCachedMarketCap(req.chain, req.tokenAddress)) {
       case (?cached) { cached };
       case null {
         ignore Map.delete(marketCapCache, Text.compare, marketCapCacheKey(req.chain, req.tokenAddress));
-        switch (await getMarketCapUsdInternal(req.chain, req.tokenAddress, req.oracleAddress)) {
-          case (#ok(fresh)) { fresh };
+        // The internal records through `recordMarketCap` before returning
+        // #ok, so re-read the row it just wrote: the scale then travels
+        // with the value.
+        switch (await getMarketCapInternal(req.chain, req.tokenAddress)) {
+          case (#ok(_)) {};
           case (#err(msg)) { return #err(#InvalidOracle(msg)) };
+        };
+        switch (getCachedMarketCap(req.chain, req.tokenAddress)) {
+          case (?fresh) { fresh };
+          case null { return #err(#InvalidOracle("market-cap refresh did not record a snapshot")) };
         };
       };
     };
-    if (capUsd8 < targetUsd8) {
+    let targetScaled : Nat = req.marketCapTarget * (10 ** entry.scaleDecimals);
+    if (entry.capScaled < targetScaled) {
       return #err(#MarketCapNotReached({
         required = req.marketCapTarget;
-        actual = capUsd8 / (10 ** ORACLE_PRICE_DECIMALS);
+        actual = entry.capScaled / (10 ** entry.scaleDecimals);
       }));
     };
 
@@ -2227,32 +2446,6 @@ persistent actor {
     } catch (e) {
       #err(#VetKDError(Error.message(e)));
     };
-  };
-
-  /// Internal refresh path used by requestDecryptionKeyV4. Unlike the
-  /// public `getMarketCapUsd`, this returns the SCALED value and always
-  /// performs a fresh fetch (the caller has already handled the
-  /// cache-hit case).
-  func getMarketCapUsdInternal(
-    chain : Chain,
-    tokenAddress : Text,
-    oracleAddress : Text,
-  ) : async Result.Result<Nat, Text> {
-    let decimals = switch (await fetchTokenDecimals(chain, tokenAddress)) {
-      case (#ok(d)) { d };
-      case (#err(msg)) { return #err(msg) };
-    };
-    let supplyRaw = switch (await fetchTotalSupply(chain, tokenAddress)) {
-      case (#ok(s)) { s };
-      case (#err(msg)) { return #err(msg) };
-    };
-    let priceUsd8 = switch (await fetchOraclePriceUsd8(chain, oracleAddress)) {
-      case (#ok(p)) { p };
-      case (#err(msg)) { return #err(msg) };
-    };
-    let capUsd8 = supplyRaw * priceUsd8 / (10 ** decimals);
-    recordMarketCap(chain, tokenAddress, capUsd8);
-    #ok(capUsd8);
   };
 
   /// Ops diagnostic only; NEVER call this on the hot path (upload or

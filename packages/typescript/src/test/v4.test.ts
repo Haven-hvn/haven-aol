@@ -27,8 +27,9 @@ import {
   GATE_METADATA_VERSION_V4,
   EIP712_GATE_REQUEST_V4_TYPE_STRING,
   EIP712_GATE_REQUEST_V4_TYPEHASH,
-  ORACLE_PRICE_DECIMALS,
   MARKET_CAP_CACHE_TTL_SECONDS,
+  BOND_ADDRESSES,
+  isBondAddress,
   computeDerivationInputV4,
   buildGateMetadataV4,
   gateMetadataV4ToJson,
@@ -65,7 +66,6 @@ interface FixtureFile {
     vetkdContext: string;
     eip712TypeString: string;
     eip712TypehashHex: string;
-    oraclePriceDecimals: number;
     marketCapCacheTtlSeconds: number;
   };
   vectors: FixturePositiveVector[];
@@ -94,9 +94,7 @@ describe("v4 constants", () => {
     assert.deepEqual(Buffer.from(EIP712_GATE_REQUEST_V4_TYPEHASH), fixtureHash);
   });
 
-  it("oracle + cache policy constants match fixture/canister", () => {
-    assert.equal(ORACLE_PRICE_DECIMALS, FIXTURE.constants.oraclePriceDecimals);
-    assert.equal(ORACLE_PRICE_DECIMALS, 8);
+  it("cache policy constants match fixture/canister", () => {
     assert.equal(MARKET_CAP_CACHE_TTL_SECONDS, FIXTURE.constants.marketCapCacheTtlSeconds);
     assert.equal(MARKET_CAP_CACHE_TTL_SECONDS, 300);
     assert.equal(FIXTURE.constants.vetkdContext, "accessol_v4");
@@ -260,5 +258,71 @@ describe("buildGateRequestV4TypedData", () => {
         eip712VerifyingContract: "0x" + "cc".repeat(20),
       }),
     );
+  });
+});
+
+// ── Bond mode — address classification ──────────────────────────────────
+
+describe("isBondAddress", () => {
+  // Canonical Bond address in dapp-hint casing
+  // (haven-dapp/src/lib/v4/market-cap.ts :: BOND_ADDRESS_HINTS).
+  const BOND = "0xc5a076cad94176c2996B32d8466Be1cE757FAa27";
+  const BOND_SEPOLIA = "0x8dce343A86Aa950d539eeE0e166AFfd0Ef515C0c";
+  const CHAINLINK_FEED = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"; // ETH/USD mainnet
+
+  it("classifies the Bond address on all five chains", () => {
+    assert.equal(isBondAddress("EthMainnet", BOND), true);
+    assert.equal(isBondAddress("BaseMainnet", BOND), true);
+    assert.equal(isBondAddress("ArbitrumOne", BOND), true);
+    assert.equal(isBondAddress("OptimismMainnet", BOND), true);
+    assert.equal(isBondAddress("EthSepolia", BOND_SEPOLIA), true);
+    // Cross-check: mainnet Bond is NOT the Sepolia Bond and vice versa.
+    assert.equal(isBondAddress("EthSepolia", BOND), false);
+    assert.equal(isBondAddress("BaseMainnet", BOND_SEPOLIA), false);
+  });
+
+  it("is case-insensitive (checksummed, lower, upper)", () => {
+    assert.equal(
+      isBondAddress("BaseMainnet", "0xC5A076CAD94176C2996B32D8466BE1CE757FAA27"),
+      true,
+    );
+    assert.equal(
+      isBondAddress("BaseMainnet", BOND.toLowerCase()),
+      true,
+    );
+  });
+
+  it("rejects non-Bond addresses and unknown chains", () => {
+    assert.equal(isBondAddress("BaseMainnet", CHAINLINK_FEED), false);
+    assert.equal(isBondAddress("BaseMainnet", "0x" + "00".repeat(20)), false);
+    assert.equal(isBondAddress("NoSuchChain", BOND), false);
+    assert.equal(isBondAddress("BaseMainnet", "not-an-address"), false);
+  });
+
+  it("BOND_ADDRESSES parity with the canister defaults (per chain)", () => {
+    // Same style as the constants test above: the SDK table must track
+    // BOND_ADDRESS_DEFAULT (mainnets) and BOND_ADDRESS_SEPOLIA (testnet)
+    // in src/backend/main.mo (lowercase compare — EIP-55 casing is not
+    // load-bearing; the canister lowercases).
+    const mainMo = fs.readFileSync(path.join(REPO_ROOT, "src", "backend", "main.mo"), "utf-8");
+    const def = mainMo.match(/BOND_ADDRESS_DEFAULT\s*:\s*Text\s*=\s*"([^"]+)"/);
+    const sepolia = mainMo.match(/BOND_ADDRESS_SEPOLIA\s*:\s*Text\s*=\s*"([^"]+)"/);
+    assert.ok(def, "BOND_ADDRESS_DEFAULT not found in src/backend/main.mo");
+    assert.ok(sepolia, "BOND_ADDRESS_SEPOLIA not found in src/backend/main.mo");
+    const expected: Record<string, string> = {
+      EthMainnet: def[1],
+      BaseMainnet: def[1],
+      ArbitrumOne: def[1],
+      OptimismMainnet: def[1],
+      EthSepolia: sepolia[1],
+    };
+    assert.deepEqual(Object.keys(BOND_ADDRESSES).sort(), Object.keys(expected).sort());
+    for (const chainKey of Object.keys(expected)) {
+      assert.equal(
+        BOND_ADDRESSES[chainKey].toLowerCase(),
+        expected[chainKey].toLowerCase(),
+        `BOND_ADDRESSES[${chainKey}] drifted from canister default`,
+      );
+    }
   });
 });

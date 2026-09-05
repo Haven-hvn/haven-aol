@@ -171,9 +171,13 @@ type BatchGateRequestV3 = record {
 
 // ── Protocol v4 (market-cap-gated drip) types ──────────────────────
 // Derivation keys on (chain, tokenAddress, threshold, effectiveEpoch,
-// marketCapTarget); the canister refuses to derive until the live USD
-// market cap of `tokenAddress` (via `oracleAddress`, a Chainlink
-// aggregator) reaches `marketCapTarget`. Whole-USD target units.
+// marketCapTarget); the canister refuses to derive until the live
+// reserve-native market cap of `tokenAddress` reaches `marketCapTarget`
+// (whole reserve units — whole ETH for v1 native-reserve tokens).
+//
+// `oracleAddress` must name the chain's Bond contract: the curve is the
+// ONLY price source, so anything else fails closed. It stays `text` and
+// is not a signed field.
 
 type GateRequestV4 = record {
   chain : Chain;
@@ -188,6 +192,15 @@ type GateRequestV4 = record {
   signature : blob;
   eip712ChainId : nat;
   eip712VerifyingContract : text;
+};
+
+// ── Protocol v4 Bond config ────────────────────────────────────────
+// Per-chain curve-pricing table (Bond contract, wrapped-native reserve).
+// Admin-set, never publisher-supplied. Heap-only: entries must be re-set
+// after every canister upgrade.
+type BondConfig = record {
+  bond : text;
+  wrappedNative : text;
 };
 
 service : {
@@ -216,13 +229,22 @@ service : {
   requestDecryptionKeyV4 : (GateRequestV4) -> (GateResult);
   getVetKDPublicKeyV4 : () -> (blob) query;
   warmupVetKDPublicKeyV4 : () -> (blob);
-  // Live USD market cap for a token via its Chainlink aggregator.
+  // Live market cap for a token in whole reserve units (whole ETH for
+  // v1 native-reserve tokens). `oracleAddress` must name the chain's Bond
+  // contract — anything else fails closed without touching the chain.
   // Diagnostic/preview helper — the gate endpoint performs its own
-  // (burst-cached) fetch; callers should not round-trip through this
-  // before every decrypt.
-  getMarketCapUsd : (Chain, text, text) -> (variant { ok : nat; err : text });
+  // (burst-cached) fetch; callers should not round-trip through
+  // this before every decrypt.
+  getMarketCap : (Chain, text, text) -> (variant { ok : nat; err : text });
   // Controller-only janitor for the v4 market-cap burst cache
   // (5-minute TTL). Operator cron calls in a loop until it returns 0.
   evictExpiredMarketCaps : (nat) -> (nat);
+  // Controller-gated setter for the per-chain Bond config.
+  // Heap-only: re-set after every canister upgrade. Traps non-controllers.
+  setBondConfig : (Chain, BondConfig) -> ();
+  // Operator query: effective Bond config for a chain (explicit
+  // entry, else the compiled-in default; null is reserved for future
+  // chains — every current variant has a default).
+  getBondConfig : (Chain) -> (opt BondConfig) query;
 
 }
