@@ -1,6 +1,6 @@
 # Haven-AOL
 
-**Always Online** on [DFINITY Internet Computer](https://internetcomputer.org/): an ICP-native layer for **smart access management** across web3 — **conditional key access** for token-gated content, **shared access** patterns suited to **DAOs**, **DataDAOs**, **agent swarms**, and other cooperative setups.
+**Always Online** on [DFINITY Internet Computer](https://dashboard.internetcomputer.org/canister/gny6k-fqaaa-aaaab-ag3ra-cai): an ICP-native layer for **smart access management** across web3 — **conditional key access** for token-gated content, **shared access** patterns suited to **DAOs**, **DataDAOs**, **agent swarms**, and other cooperative setups.
 
 This repository contains:
 
