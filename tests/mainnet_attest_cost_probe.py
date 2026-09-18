@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-MAINNET_CANISTER_ID = "dciac-uaaaa-aaaad-qlzuq-cai"
+MAINNET_CANISTER_ID = "gny6k-fqaaa-aaaab-ag3ra-cai"
 MAINNET_HOST = "https://icp-api.io"
 EIP712_CHAIN_ID = 1
 EIP712_VERIFYING_CONTRACT = "0x1c7D4B196Cb0C7B01d743Fbc6116a9023097791A"

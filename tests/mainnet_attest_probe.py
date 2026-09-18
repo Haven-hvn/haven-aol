@@ -1,6 +1,6 @@
 """Minimal mainnet probe for attestHolding (no haven-cli).
 
-Reproduces the haven-cli / icp-py-core path against dciac-uaaaa-aaaad-qlzuq-cai.
+Reproduces the haven-cli / icp-py-core path against gny6k-fqaaa-aaaab-ag3ra-cai.
 Run from repo root in WSL:
 
   pip install icp-py-core eth-account pytest
@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-MAINNET_CANISTER_ID = "dciac-uaaaa-aaaad-qlzuq-cai"
+MAINNET_CANISTER_ID = "gny6k-fqaaa-aaaab-ag3ra-cai"
 MAINNET_HOST = "https://icp-api.io"
 
 EIP712_CHAIN_ID = 1

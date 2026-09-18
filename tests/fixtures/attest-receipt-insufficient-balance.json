@@ -1,6 +1,6 @@
 {
   "status": "err",
-  "canisterId": "dciac-uaaaa-aaaad-qlzuq-cai",
+  "canisterId": "gny6k-fqaaa-aaaab-ag3ra-cai",
   "error": {
     "InsufficientBalance": {
       "required": 1,

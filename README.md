@@ -97,7 +97,7 @@ See [`tests/README.md`](tests/README.md) for integration tests, local replica se
 
 ## Backend canister API
 
-Candid interface: [`src/backend/backend.did`](src/backend/backend.did). Mainnet canister: `dciac-uaaaa-aaaad-qlzuq-cai`.
+Candid interface: [`src/backend/backend.did`](src/backend/backend.did). Mainnet canister: `gny6k-fqaaa-aaaab-ag3ra-cai`.
 
 ### v1 — Gate flow (decryption keys)
 

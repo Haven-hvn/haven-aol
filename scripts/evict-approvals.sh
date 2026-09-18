@@ -17,7 +17,7 @@
 #   • The script is idempotent: running it twice in a row is harmless.
 #
 # Environment variables (all optional except where noted):
-#   HAVEN_AOL_CANISTER_ID    Canister id. Default: dciac-uaaaa-aaaad-qlzuq-cai
+#   HAVEN_AOL_CANISTER_ID    Canister id. Default: gny6k-fqaaa-aaaab-ag3ra-cai
 #                            (mainnet backend per docs/mainnet-icp-deploy-
 #                            test-runbook.md §6).
 #   HAVEN_AOL_NETWORK        Network passed to the CLI via `-e`. Default: ic.
@@ -63,7 +63,7 @@ set -euo pipefail
 # Defaults and argument parsing
 # -----------------------------------------------------------------------------
 
-HAVEN_AOL_CANISTER_ID="${HAVEN_AOL_CANISTER_ID:-dciac-uaaaa-aaaad-qlzuq-cai}"
+HAVEN_AOL_CANISTER_ID="${HAVEN_AOL_CANISTER_ID:-gny6k-fqaaa-aaaab-ag3ra-cai}"
 HAVEN_AOL_NETWORK="${HAVEN_AOL_NETWORK:-ic}"
 HAVEN_AOL_IDENTITY="${HAVEN_AOL_IDENTITY:-}"
 HAVEN_AOL_BATCH="${HAVEN_AOL_BATCH:-500}"
