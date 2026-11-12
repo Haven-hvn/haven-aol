@@ -4,6 +4,11 @@ canisters:
       type: "@dfinity/motoko@v4.1.0"
       configuration:
         main: src/backend/main.mo
+  - name: backend-v2
+    recipe:
+      type: "@dfinity/motoko@v4.1.0"
+      configuration:
+        main: src/backend/main.mo
   - name: evm_rpc
     build:
       steps:
@@ -17,9 +22,9 @@ environments:
     canisters: [backend, evm_rpc]
   - name: ic
     network: ic
-    canisters: [backend]
+    canisters: [backend-v2]
     settings:
-      backend:
+      backend-v2:
         environment_variables:
           # Explicit custom name: `PUBLIC_CANISTER_ID:*` is reserved for
           # icp-cli's automatic injection and can overwrite this value.
