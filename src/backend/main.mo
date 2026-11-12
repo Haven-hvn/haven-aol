@@ -451,11 +451,23 @@ persistent actor {
   let tokenDecimalsCache = Map.empty<Text, Nat>();
 
 
-  // ── EVM RPC canister reference ─────────────────────────────────────
-
+  // EVM RPC canister reference.
+  //
+  // `PUBLIC_CANISTER_ID:*` is reserved by icp-cli's automatic canister-ID
+  // injection, which inserts bindings after custom env vars and can overwrite
+  // a hand-set `PUBLIC_CANISTER_ID:evm_rpc` (observed: the backend called
+  // itself -> IC0406). Read the explicit custom var first, then the legacy
+  // key, then fall back to the mainnet EVM-RPC canister.
   transient let evmRpc : EvmRpcCanister = do {
-    let ?id = Runtime.envVar("PUBLIC_CANISTER_ID:evm_rpc")
-      else Runtime.trap("PUBLIC_CANISTER_ID:evm_rpc not set");
+    let id = switch (Runtime.envVar("EVM_RPC_CANISTER_ID")) {
+      case (?v) { v };
+      case null {
+        switch (Runtime.envVar("PUBLIC_CANISTER_ID:evm_rpc")) {
+          case (?v) { v };
+          case null { "7hfb6-caaaa-aaaar-qadga-cai" };
+        };
+      };
+    };
     actor (id) : EvmRpcCanister;
   };
 

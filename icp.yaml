@@ -21,6 +21,9 @@ environments:
     settings:
       backend:
         environment_variables:
+          # Explicit custom name: `PUBLIC_CANISTER_ID:*` is reserved for
+          # icp-cli's automatic injection and can overwrite this value.
+          EVM_RPC_CANISTER_ID: "7hfb6-caaaa-aaaar-qadga-cai"
           PUBLIC_CANISTER_ID:evm_rpc: "7hfb6-caaaa-aaaar-qadga-cai"
           VETKD_CANISTER_ID: "vrqyr-saaaa-aaaan-qzn4q-cai"
           VETKD_KEY_NAME: "insecure_test_key_1"
