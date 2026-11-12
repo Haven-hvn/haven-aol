@@ -8,7 +8,9 @@ name = "haven_aol_vetkeys"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module"] }
-ic-vetkeys = "0.7"
+pyo3 = { version = "0.30", features = ["extension-module"] }
+ic-vetkeys = "0.9"
+# ic-vetkeys 0.9 uses ic-management-canister-types 0.7.x; the VetKDKeyId
+# type must match exactly, so this stays on the latest 0.7 release.
 ic-management-canister-types = "0.7"
-rand = "0.8"
+rand = "0.10"

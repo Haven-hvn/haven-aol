@@ -2,7 +2,7 @@ use ic_management_canister_types::{VetKDCurve, VetKDKeyId};
 use ic_vetkeys::{DerivedPublicKey, IbeCiphertext, IbeIdentity, IbeSeed, MasterPublicKey};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use rand::{CryptoRng, RngCore};
+use rand::RngExt;
 
 fn derive_verification_key_rs(
     key_name: &str,
@@ -46,12 +46,15 @@ fn ibe_encrypt_rs(
     derived_public_key_bytes: &[u8],
     identity_bytes: &[u8],
     plaintext: &[u8],
-    rng: &mut (impl CryptoRng + RngCore),
+    rng: &mut impl rand::Rng,
 ) -> Result<Vec<u8>, &'static str> {
     let derived_key = DerivedPublicKey::deserialize(derived_public_key_bytes)
         .map_err(|_| "Invalid DerivedPublicKey bytes")?;
     let identity = IbeIdentity::from_bytes(identity_bytes);
-    let seed = IbeSeed::random(rng);
+    // ic-vetkeys 0.9 targets rand 0.8, so generate the 32-byte seed here with
+    // rand 0.10 and construct IbeSeed from bytes instead of IbeSeed::random.
+    let seed_bytes: [u8; 32] = rng.random();
+    let seed = IbeSeed::from_bytes(&seed_bytes).map_err(|_| "Failed to generate IBE seed")?;
     let ciphertext = IbeCiphertext::encrypt(&derived_key, &identity, plaintext, &seed);
     Ok(ciphertext.serialize())
 }
@@ -67,7 +70,7 @@ fn ibe_encrypt(
         derived_public_key_bytes,
         identity_bytes,
         plaintext,
-        &mut rand::thread_rng(),
+        &mut rand::rng(),
     )
     .map_err(PyValueError::new_err)
 }

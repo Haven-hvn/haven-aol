@@ -8,6 +8,7 @@
 ///   const sig = await wallet.signMessage("test");
 ///   // Extract r, s, v and compute the prefixed hash
 import Blob "mo:core/Blob";
+import Char "mo:core/Char";
 import Nat8 "mo:core/Nat8";
 import Array "mo:core/Array";
 import Nat64 "mo:core/Nat64";
