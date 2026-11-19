@@ -29,7 +29,7 @@ Typical uses:
 Agents working in this repository should treat ICP mainnet as the default backend runtime.
 
 - Service host: `https://icp-api.io`
-- Service canister ID: `gny6k-fqaaa-aaaab-ag3ra-cai`
+- Service canister ID: `3gzy3-kaaaa-aaaan-q6y6q-cai`
 - Identity used for ops in this repo: `mainnet-validation-20260506`
 
 ## Integration Points In This Repo

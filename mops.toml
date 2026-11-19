@@ -8,3 +8,6 @@ secp256k1 = "./packages/secp256k1"
 
 [canisters.backend]
 main = "src/backend/main.mo"
+
+[canisters.backend-v2]
+main = "src/backend/main.mo"
