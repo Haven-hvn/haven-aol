@@ -61,3 +61,20 @@ export {
   parseGateMetadataV4,
   buildGateRequestV4TypedData,
 } from "./v4.js";
+
+// ── Haven OS cross-site bridge (haven-os:v1) ──────────────────────────────────
+
+export type {
+  HavenOsBridgeConfig,
+  HavenOsBridgeWalletInfo,
+  HavenOsWelcomePayload,
+  HavenOsBridgeRequest,
+  HavenOsBridgeResponse,
+  HavenOsBridgeHello,
+  HavenOsBridgeWelcome,
+  HavenOsBridgeEvent,
+  HavenOsBridgeMessage,
+  BridgeEip1193Provider,
+  HavenOsBridgeClient,
+} from "./os-bridge.js";
+export { HAVEN_OS_BRIDGE_CHANNEL, registerHavenOsBridge } from "./os-bridge.js";
