@@ -68,6 +68,9 @@ export type {
   HavenOsBridgeConfig,
   HavenOsBridgeWalletInfo,
   HavenOsWelcomePayload,
+  HavenOsGateKeyResult,
+  HavenOsGateKeyQuery,
+  HavenOsUnlockGateParams,
   HavenOsBridgeRequest,
   HavenOsBridgeResponse,
   HavenOsBridgeHello,
@@ -77,4 +80,9 @@ export type {
   BridgeEip1193Provider,
   HavenOsBridgeClient,
 } from "./os-bridge.js";
-export { HAVEN_OS_BRIDGE_CHANNEL, registerHavenOsBridge } from "./os-bridge.js";
+export {
+  HAVEN_OS_BRIDGE_CHANNEL,
+  isTrustedHavenOsOrigin,
+  getHavenOsBridge,
+  registerHavenOsBridge,
+} from "./os-bridge.js";

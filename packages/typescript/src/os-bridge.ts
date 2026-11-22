@@ -29,6 +29,35 @@ export interface HavenOsWelcomePayload {
   unlockedGates: string[];
 }
 
+export interface HavenOsGateKeyResult {
+  gateId: string;
+  epoch: number;
+  rawKeyBase64: string;
+  /** Serialized `@icp-sdk/vetkeys` VetKey bytes (base64) for IBE decryption. */
+  vetKeyBase64?: string;
+  chainVariant?: string;
+  tokenAddress?: string;
+  threshold?: string;
+}
+
+export interface HavenOsGateKeyQuery {
+  gateId?: string;
+  chainId?: number;
+  chainVariant?: string;
+  tokenAddress?: string;
+  threshold?: string;
+  epoch?: number;
+}
+
+export interface HavenOsUnlockGateParams {
+  gateId?: string;
+  chainId?: number;
+  chainVariant?: string;
+  tokenAddress: string;
+  threshold: string;
+  epoch?: number;
+}
+
 export interface HavenOsBridgeRequest {
   channel: typeof HAVEN_OS_BRIDGE_CHANNEL;
   kind: "request";
@@ -85,14 +114,11 @@ export interface HavenOsBridgeClient {
   provider: BridgeEip1193Provider;
   waitForWelcome: (timeoutMs?: number) => Promise<HavenOsWelcomePayload | null>;
   getConfig: () => Promise<HavenOsBridgeConfig>;
-  getGateKey: (gateId: string, epoch?: number) => Promise<{ gateId: string; epoch: number; rawKeyBase64: string } | null>;
-  unlockGate: (params: {
-    gateId: string;
-    chainId: number;
-    tokenAddress: string;
-    threshold: string;
-    epoch?: number;
-  }) => Promise<{ gateId: string; epoch: number; rawKeyBase64: string }>;
+  getGateKey: (
+    gateOrQuery: string | HavenOsGateKeyQuery,
+    epoch?: number,
+  ) => Promise<HavenOsGateKeyResult | null>;
+  unlockGate: (params: HavenOsUnlockGateParams) => Promise<HavenOsGateKeyResult>;
   onEvent: (
     event: HavenOsBridgeEvent["event"],
     listener: (data: unknown) => void,
@@ -106,7 +132,30 @@ const HAVEN_OS_ICON_SVG =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="4" fill="#0a246a"/><text x="16" y="22" font-family="Tahoma,sans-serif" font-size="16" font-weight="bold" fill="#fff" text-anchor="middle">H</text></svg>`,
   );
 
+/**
+ * Verifies that a parent host origin is allowed to act as a Haven OS bridge
+ * host (same-origin, localhost/127.0.0.1 dev, https://*.pinme.dev, or explicit allowlist).
+ */
+export function isTrustedHavenOsOrigin(origin: string, extraAllowed?: readonly string[]): boolean {
+  if (!origin || origin === "null") return false;
+  if (typeof window !== "undefined" && origin === window.location.origin) return true;
+  if (extraAllowed && extraAllowed.includes(origin)) return true;
+  try {
+    const u = new URL(origin);
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
+    if (u.protocol === "https:" && u.hostname.endsWith(".pinme.dev")) return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 let singletonClient: HavenOsBridgeClient | null = null;
+
+/** Returns the active Haven OS bridge client if already registered. */
+export function getHavenOsBridge(): HavenOsBridgeClient | null {
+  return singletonClient;
+}
 
 /**
  * Registers the Haven OS cross-site EIP-6963 + VetKD + Config bridge when
@@ -115,6 +164,7 @@ let singletonClient: HavenOsBridgeClient | null = null;
 export function registerHavenOsBridge(options?: {
   appId?: string;
   announceEip6963?: boolean;
+  allowedHostOrigins?: readonly string[];
 }): HavenOsBridgeClient | null {
   if (typeof window === "undefined") return null;
   if (singletonClient) return singletonClient;
@@ -184,11 +234,14 @@ export function registerHavenOsBridge(options?: {
 
   const onMessage = (ev: MessageEvent) => {
     if (ev.source !== window.parent) return;
+    if (!isTrustedHavenOsOrigin(ev.origin, options?.allowedHostOrigins)) return;
+    if (hostOrigin && ev.origin !== hostOrigin) return;
+
     const data = ev.data as Partial<HavenOsBridgeMessage> | null;
     if (!data || data.channel !== HAVEN_OS_BRIDGE_CHANNEL) return;
 
     if (data.kind === "welcome" && data.payload) {
-      hostOrigin = ev.origin || "*";
+      hostOrigin = ev.origin;
       connectedToHost = true;
       welcomePayload = data.payload;
       while (welcomeWaiters.length > 0) {
@@ -269,18 +322,15 @@ export function registerHavenOsBridge(options?: {
       });
     },
     getConfig: () => rpc("haven_getConfig") as Promise<HavenOsBridgeConfig>,
-    getGateKey: (gateId, epoch) =>
-      rpc("haven_getGateKey", { gateId, epoch }) as Promise<{
-        gateId: string;
-        epoch: number;
-        rawKeyBase64: string;
-      } | null>,
+    getGateKey: (gateOrQuery, epoch) => {
+      const payload: HavenOsGateKeyQuery =
+        typeof gateOrQuery === "string"
+          ? { gateId: gateOrQuery, epoch }
+          : { ...gateOrQuery, ...(epoch !== undefined ? { epoch } : {}) };
+      return rpc("haven_getGateKey", payload) as Promise<HavenOsGateKeyResult | null>;
+    },
     unlockGate: (params) =>
-      rpc("haven_unlockGate", params, 120_000) as Promise<{
-        gateId: string;
-        epoch: number;
-        rawKeyBase64: string;
-      }>,
+      rpc("haven_unlockGate", params, 120_000) as Promise<HavenOsGateKeyResult>,
     onEvent: (event, listener) => {
       provider.on(event, listener as (...args: unknown[]) => void);
       return () => provider.removeListener(event, listener as (...args: unknown[]) => void);
