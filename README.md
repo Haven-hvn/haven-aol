@@ -1,6 +1,6 @@
 # Haven-AOL
 
-**Always Online** on [DFINITY Internet Computer](https://dashboard.internetcomputer.org/canister/gny6k-fqaaa-aaaab-ag3ra-cai): an ICP-native layer for **smart access management** across web3 — **conditional key access** for token-gated content, **shared access** patterns suited to **DAOs**, **DataDAOs**, **agent swarms**, and other cooperative setups.
+**Always Online** on [DFINITY Internet Computer](https://dashboard.internetcomputer.org/canister/3gzy3-kaaaa-aaaan-q6y6q-cai): an ICP-native layer for **smart access management** across web3 — **conditional key access** for token-gated content, **shared access** patterns suited to **DAOs**, **DataDAOs**, **agent swarms**, and other cooperative setups.
 
 This repository contains:
 
@@ -97,7 +97,7 @@ See [`tests/README.md`](tests/README.md) for integration tests, local replica se
 
 ## Backend canister API
 
-Candid interface: [`src/backend/backend.did`](src/backend/backend.did). Mainnet canister: `gny6k-fqaaa-aaaab-ag3ra-cai`.
+Candid interface: [`src/backend/backend.did`](src/backend/backend.did). Mainnet canister: `3gzy3-kaaaa-aaaan-q6y6q-cai`.
 
 ### v1 — Gate flow (decryption keys)
 
